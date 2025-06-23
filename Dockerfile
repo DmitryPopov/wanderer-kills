@@ -48,13 +48,15 @@ COPY lib lib/
 COPY config config/
 COPY priv priv/
 
-# Hex and Rebar are already installed in deps stage
+# Install Hex and Rebar in build stage as well
+RUN mix local.hex --force && mix local.rebar --force
 
 # Compile and release with cache mount for build artifacts
 RUN --mount=type=cache,target=/app/_build,sharing=locked \
     --mount=type=cache,target=/root/.hex \
     --mount=type=cache,target=/root/.mix \
-    mix compile --warnings-as-errors \
+    mix deps.get --only prod \
+ && mix compile --warnings-as-errors \
  && mix release --overwrite \
  && cp -r /app/_build/prod/rel/wanderer_kills /app/release
 
