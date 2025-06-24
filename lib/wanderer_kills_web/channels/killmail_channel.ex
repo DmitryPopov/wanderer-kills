@@ -609,7 +609,7 @@ defmodule WandererKillsWeb.KillmailChannel do
   defp validate_systems(systems) do
     max_systems =
       Application.get_env(:wanderer_kills, :validation, [])
-      |> Keyword.get(:max_subscribed_systems, 50)
+      |> Keyword.get(:max_subscribed_systems, 10_000)
 
     max_system_id =
       Application.get_env(:wanderer_kills, :validation, [])
