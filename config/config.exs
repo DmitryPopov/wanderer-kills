@@ -112,6 +112,19 @@ config :wanderer_kills,
     degraded_threshold: 1000
   ],
 
+  # Dashboard configuration
+  dashboard: [
+    ets_tables: [
+      {:killmails, "🗂️", "Killmails"},
+      {:system_killmails, "🌌", "System Index"},
+      {:system_kill_counts, "📊", "Kill Counts"},
+      {:system_fetch_timestamps, "⏰", "Fetch Times"},
+      {:killmail_events, "📝", "Events"},
+      {:client_offsets, "🔖", "Client Offsets"},
+      {:counters, "🔢", "Counters"}
+    ]
+  ],
+
   # SSE configuration
   sse: [
     max_connections: 100,

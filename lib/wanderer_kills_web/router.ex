@@ -26,6 +26,10 @@ defmodule WandererKillsWeb.Router do
     plug(:accepts, ["json", "text"])
   end
 
+  pipeline :browser do
+    plug(:accepts, ["html"])
+  end
+
   pipeline :sse do
     plug(:accepts, ["text/event-stream", "application/json"])
     plug(WandererKillsWeb.Plugs.ApiLogger)
@@ -33,6 +37,13 @@ defmodule WandererKillsWeb.Router do
 
   pipeline :debug do
     plug(WandererKillsWeb.Plugs.DebugOnly)
+  end
+
+  # Browser routes
+  scope "/", WandererKillsWeb do
+    pipe_through(:browser)
+
+    get("/", PageController, :index)
   end
 
   # Health and service discovery routes (no versioning needed)

@@ -364,11 +364,11 @@ defmodule WandererKills.Ingest.RedisQ do
 
     case UnifiedProcessor.process_killmail(merged, cutoff) do
       {:ok, :kill_older} ->
-        Logger.info("[RedisQ] Kill is older than cutoff → skipping.")
+        Logger.debug(fn -> "[RedisQ] Kill is older than cutoff → skipping." end)
         {:ok, :kill_older}
 
       {:ok, enriched_killmail} ->
-        Logger.info("[RedisQ] Successfully parsed & stored new killmail.")
+        Logger.debug(fn -> "[RedisQ] Successfully parsed & stored new killmail." end)
 
         # Broadcast kill update via PubSub using the enriched killmail
         broadcast_killmail_update_enriched(enriched_killmail)

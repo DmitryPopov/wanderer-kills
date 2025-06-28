@@ -98,12 +98,12 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
   defp log_broadcast(system_id, kills) do
     case kills do
       [] ->
-        Logger.info("Broadcasted empty killmail update system_id=#{system_id}")
+        Logger.debug(fn -> "Broadcasted empty killmail update system_id=#{system_id}" end)
 
       kills ->
-        Logger.info(
+        Logger.debug(fn ->
           "Broadcasted killmail update system_id=#{system_id} kill_count=#{length(kills)} topics=[zkb:system:#{system_id}, zkb:system:#{system_id}:detailed, zkb:all_systems]"
-        )
+        end)
     end
   end
 end

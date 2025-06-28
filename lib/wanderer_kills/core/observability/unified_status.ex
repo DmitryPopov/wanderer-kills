@@ -292,7 +292,7 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
     if total_ops > 0 do
       # Efficiency is hits minus penalty for evictions
       efficiency = (hits - evictions * 0.5) / total_ops
-      Float.round(max(0, efficiency) * 100, 1)
+      Float.round(max(0.0, efficiency) * 100, 1)
     else
       0.0
     end
@@ -603,7 +603,9 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
     "#{hours}h"
   end
 
-  defp format_number(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)} M"
-  defp format_number(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)} k"
-  defp format_number(n), do: Integer.to_string(n)
+  defp format_number(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000.0, 1)} M"
+  defp format_number(n) when n >= 1_000, do: "#{Float.round(n / 1_000.0, 1)} k"
+  defp format_number(n) when is_integer(n), do: Integer.to_string(n)
+  defp format_number(n) when is_float(n), do: Float.to_string(n)
+  defp format_number(_), do: "0"
 end
