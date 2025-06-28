@@ -43,8 +43,10 @@ defmodule WandererKills.Core.Observability.WebSocketStats do
   alias WandererKills.Core.Observability.LogFormatter
   alias WandererKills.Core.Observability.Telemetry
   alias WandererKills.Core.Support.Clock
+  alias WandererKills.Subs.SubscriptionManager
 
   @stats_summary_interval :timer.minutes(5)
+  @health_check_interval :timer.minutes(1)
 
   # Client API
 
@@ -167,6 +169,11 @@ defmodule WandererKills.Core.Observability.WebSocketStats do
     # Schedule periodic stats summary
     if !Keyword.get(opts, :disable_periodic_summary, false) do
       schedule_stats_summary()
+    end
+
+    # Schedule periodic health check
+    if !Keyword.get(opts, :disable_health_check, false) do
+      schedule_health_check()
     end
 
     state = %{
@@ -329,10 +336,23 @@ defmodule WandererKills.Core.Observability.WebSocketStats do
     {:noreply, state}
   end
 
+  @impl true
+  def handle_info(:health_check, state) do
+    # Reconcile actual connections with tracked stats
+    new_state = reconcile_connection_stats(state)
+
+    schedule_health_check()
+    {:noreply, new_state}
+  end
+
   # Private helper functions
 
   defp schedule_stats_summary do
     Process.send_after(self(), :stats_summary, @stats_summary_interval)
+  end
+
+  defp schedule_health_check do
+    Process.send_after(self(), :health_check, @health_check_interval)
   end
 
   defp build_stats_response(state) do
@@ -387,5 +407,77 @@ defmodule WandererKills.Core.Observability.WebSocketStats do
     {:ok, last_reset, _} = DateTime.from_iso8601(stats.last_reset)
     reset_minutes = max(1, DateTime.diff(DateTime.utc_now(), last_reset) / 60)
     stats.kills_sent.total / reset_minutes
+  end
+
+  defp reconcile_connection_stats(state) do
+    # Get actual WebSocket subscriptions
+    actual_websocket_subs =
+      SubscriptionManager.list_subscriptions()
+      |> Enum.filter(&(&1["socket_pid"] != nil))
+
+    # Count alive connections
+    actual_alive_count = count_alive_connections(actual_websocket_subs)
+
+    # Check if we need to reconcile
+    tracked_active = state.connections.active
+
+    if tracked_active == actual_alive_count do
+      state
+    else
+      perform_reconciliation(state, actual_websocket_subs, actual_alive_count, tracked_active)
+    end
+  end
+
+  defp count_alive_connections(websocket_subs) do
+    websocket_subs
+    |> Enum.map(& &1["socket_pid"])
+    |> Enum.filter(&Process.alive?/1)
+    |> length()
+  end
+
+  defp perform_reconciliation(state, websocket_subs, actual_alive_count, tracked_active) do
+    Logger.warning(
+      "[WebSocketStats] Connection count mismatch detected. " <>
+        "Tracked: #{tracked_active}, Actual: #{actual_alive_count}. Reconciling...",
+      tracked_active: tracked_active,
+      actual_alive: actual_alive_count,
+      drift: tracked_active - actual_alive_count
+    )
+
+    # Clean up dead subscriptions
+    dead_count = cleanup_dead_subscriptions(websocket_subs)
+
+    # Update state to match reality
+    new_connections = %{
+      state.connections
+      | active: actual_alive_count,
+        total_disconnected: state.connections.total_disconnected + dead_count
+    }
+
+    new_subscriptions = %{
+      state.subscriptions
+      | active: actual_alive_count,
+        total_removed: state.subscriptions.total_removed + dead_count
+    }
+
+    %{state | connections: new_connections, subscriptions: new_subscriptions}
+  end
+
+  defp cleanup_dead_subscriptions(websocket_subs) do
+    websocket_subs
+    |> Enum.map(fn sub ->
+      if Process.alive?(sub["socket_pid"]) do
+        0
+      else
+        Logger.debug("[WebSocketStats] Removing dead subscription during reconciliation",
+          subscription_id: sub["id"],
+          user_id: sub["user_id"]
+        )
+
+        SubscriptionManager.remove_subscription(sub["id"])
+        1
+      end
+    end)
+    |> Enum.sum()
   end
 end

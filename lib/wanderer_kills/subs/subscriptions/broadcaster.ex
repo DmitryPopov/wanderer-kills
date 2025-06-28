@@ -54,6 +54,9 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
     Logger.debug("Broadcasting to all systems topic: #{all_systems_topic}")
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, all_systems_topic, message)
 
+    # Also broadcast SSE-formatted messages for SSE subscribers
+    broadcast_sse_messages(system_id, kills)
+
     log_broadcast(system_id, kills)
     :ok
   end
@@ -94,6 +97,38 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
   def pubsub_name, do: @pubsub_name
 
   # Private Functions
+
+  defp broadcast_sse_messages(system_id, kills) do
+    alias WandererKills.SSE.Broadcaster, as: SSEBroadcaster
+
+    # Broadcast to system topic
+    system_topic = PubSubTopics.system_topic(system_id)
+    system_result = SSEBroadcaster.broadcast_killmails(system_topic, kills)
+
+    # Broadcast to all systems topic
+    all_systems_topic = PubSubTopics.all_systems_topic()
+    all_systems_result = SSEBroadcaster.broadcast_killmails(all_systems_topic, kills)
+
+    # Handle errors
+    handle_broadcast_errors(system_topic, system_result)
+    handle_broadcast_errors(all_systems_topic, all_systems_result)
+
+    :ok
+  end
+
+  defp handle_broadcast_errors(topic, {:error, errors}) do
+    Enum.each(errors, fn {:error, {reason, killmail}} ->
+      killmail_id = Map.get(killmail, "killmail_id", "unknown")
+
+      Logger.error("[Broadcaster] Failed to broadcast killmail",
+        topic: topic,
+        killmail_id: killmail_id,
+        reason: inspect(reason)
+      )
+    end)
+  end
+
+  defp handle_broadcast_errors(_topic, :ok), do: :ok
 
   defp log_broadcast(system_id, kills) do
     case kills do

@@ -94,6 +94,7 @@ defmodule WandererKillsWeb.KillmailChannel do
   alias WandererKills.Subs.Preloader
   alias WandererKills.Subs.SubscriptionManager
   alias WandererKills.Subs.Subscriptions.Filter
+  alias WandererKillsWeb.Channels.HeartbeatMonitor
 
   @impl true
   def join("killmails:lobby", %{"systems" => systems} = params, socket) when is_list(systems) do
@@ -456,6 +457,12 @@ defmodule WandererKillsWeb.KillmailChannel do
     {:noreply, socket}
   end
 
+  # Handle Phoenix heartbeat messages
+  def handle_info(:heartbeat, socket) do
+    # Phoenix handles heartbeats internally, just acknowledge
+    {:noreply, socket}
+  end
+
   # Handle any unmatched PubSub messages
   def handle_info(message, socket) do
     Logger.debug("[DEBUG] Unhandled PubSub message",
@@ -469,6 +476,9 @@ defmodule WandererKillsWeb.KillmailChannel do
   # Clean up when client disconnects
   @impl true
   def terminate(reason, socket) do
+    # Unregister from heartbeat monitor
+    HeartbeatMonitor.unregister_connection(self())
+
     if subscription_id = socket.assigns[:subscription_id] do
       # Track disconnection
       WebSocketStats.track_connection(:disconnected, %{
@@ -564,6 +574,13 @@ defmodule WandererKillsWeb.KillmailChannel do
         subscription_id: subscription_id,
         initial_systems_count: length(valid_systems),
         initial_characters_count: length(valid_characters)
+      )
+
+      # Register with heartbeat monitor
+      HeartbeatMonitor.register_connection(
+        self(),
+        socket.assigns.user_id,
+        subscription_id
       )
 
       # Subscribe to Phoenix PubSub topics

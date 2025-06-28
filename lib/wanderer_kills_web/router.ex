@@ -31,7 +31,7 @@ defmodule WandererKillsWeb.Router do
   end
 
   pipeline :sse do
-    plug(:accepts, ["text/event-stream", "application/json"])
+    # Don't use accepts plug for SSE - let the controller handle content type
     plug(WandererKillsWeb.Plugs.ApiLogger)
   end
 

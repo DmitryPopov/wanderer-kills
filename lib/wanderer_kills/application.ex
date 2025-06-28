@@ -77,7 +77,8 @@ defmodule WandererKills.Application do
       WandererKills.Subs.SubscriptionSupervisor,
       WandererKills.Ingest.RateLimiter,
       WandererKills.Ingest.HistoricalFetcher,
-      WandererKills.Core.Storage.CleanupWorker
+      WandererKills.Core.Storage.CleanupWorker,
+      WandererKills.Core.Storage.MemoryMonitor
     ]
 
     # Add smart rate limiting components if enabled
@@ -115,6 +116,7 @@ defmodule WandererKills.Application do
       WandererKills.Core.Observability.TelemetryMetrics,
       WandererKills.Core.Observability.WebSocketStats,
       WandererKills.Core.Observability.UnifiedStatus,
+      WandererKillsWeb.Channels.HeartbeatMonitor,
       {:telemetry_poller, measurements: telemetry_measurements(), period: :timer.seconds(10)}
     ]
   end

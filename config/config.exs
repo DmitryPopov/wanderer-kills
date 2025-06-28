@@ -89,9 +89,15 @@ config :wanderer_kills,
   # Storage configuration
   storage: [
     enable_event_streaming: true,
-    # 1 hour cleanup interval
-    gc_interval_ms: 3_600_000,
-    max_events_per_system: 10_000
+    # 15 minutes cleanup interval (reduced from 1 hour)
+    gc_interval_ms: 900_000,
+    max_events_per_system: 10_000,
+    # Memory monitor configuration
+    memory_check_interval_ms: 30_000,
+    memory_threshold_mb: 1000,
+    emergency_threshold_mb: 1500,
+    emergency_killmail_threshold: 50_000,
+    emergency_removal_percentage: 25
   ],
 
   # Monitoring and telemetry configuration

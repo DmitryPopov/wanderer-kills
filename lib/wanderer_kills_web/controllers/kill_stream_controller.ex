@@ -116,7 +116,8 @@ defmodule WandererKillsWeb.KillStreamController do
       "system_id" => 30_000_142,
       "kill_time" => DateTime.utc_now() |> DateTime.to_iso8601(),
       "victim" => %{"character_id" => 123_456_789},
-      "attackers" => [%{"character_id" => 987_654_321}]
+      "attackers" => [%{"character_id" => 987_654_321}],
+      "zkb" => %{"totalValue" => 500_000_000}
     }
 
     # Broadcast using the same mechanism as real killmails
@@ -124,7 +125,17 @@ defmodule WandererKillsWeb.KillStreamController do
       test_killmail
     ])
 
-    json(conn, %{message: "Test broadcast sent to system 30000142", killmail_id: 999_999_999})
+    # Also send a direct SSE test message
+    alias WandererKills.SSE.Broadcaster, as: SSEBroadcaster
+    alias WandererKills.Core.Support.PubSubTopics
+    system_topic = PubSubTopics.system_topic(30_000_142)
+    SSEBroadcaster.broadcast_test_message(system_topic)
+
+    json(conn, %{
+      message: "Test broadcast sent to system 30000142",
+      killmail_id: 999_999_999,
+      topics: [system_topic, PubSubTopics.all_systems_topic()]
+    })
   end
 
   defp determine_topics(filters) do

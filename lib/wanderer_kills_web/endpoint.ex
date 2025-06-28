@@ -10,10 +10,15 @@ defmodule WandererKillsWeb.Endpoint do
   # WebSocket configuration
   socket("/socket", WandererKillsWeb.UserSocket,
     websocket: [
-      timeout: 45_000,
+      # 60 seconds (increased from 45)
+      timeout: 60_000,
       transport_log: if(Mix.env() == :dev, do: :debug, else: false),
       # Set to specific origins in production
-      check_origin: false
+      check_origin: false,
+      # Compress messages for better performance
+      compress: true,
+      # Max frame size 128KB
+      max_frame_size: 131_072
     ],
     longpoll: false
   )

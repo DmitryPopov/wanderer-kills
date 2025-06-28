@@ -619,12 +619,12 @@ defmodule WandererKills.Core.Storage.KillmailStore do
   Performs cleanup of old data based on configured TTLs.
 
   TTL Configuration:
-  - killmails: 7 days
-  - system_killmails: 7 days
-  - system_kill_counts: 1 day
-  - system_fetch_timestamps: 1 day
-  - killmail_events: 7 days
-  - client_offsets: 3 days
+  - killmails: 2 days
+  - system_killmails: 2 days
+  - system_kill_counts: Cleaned when system has no killmails
+  - system_fetch_timestamps: 12 hours
+  - killmail_events: 2 days
+  - client_offsets: 1 day
   """
   def cleanup_old_data do
     try do
@@ -633,14 +633,14 @@ defmodule WandererKills.Core.Storage.KillmailStore do
       now = DateTime.utc_now()
 
       # Define TTLs in seconds
-      # 7 days
-      killmail_ttl = 7 * 24 * 60 * 60
-      # 1 day
-      system_count_ttl = 24 * 60 * 60
-      # 1 day
-      timestamp_ttl = 24 * 60 * 60
-      # 3 days
-      client_offset_ttl = 3 * 24 * 60 * 60
+      # 2 days (reduced from 7 days)
+      killmail_ttl = 2 * 24 * 60 * 60
+      # 12 hours (reduced from 1 day)
+      system_count_ttl = 12 * 60 * 60
+      # 12 hours (reduced from 1 day)
+      timestamp_ttl = 12 * 60 * 60
+      # 1 day (reduced from 3 days)
+      client_offset_ttl = 24 * 60 * 60
 
       # Track cleanup stats
       stats = %{

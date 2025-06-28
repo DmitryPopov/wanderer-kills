@@ -3,12 +3,12 @@ defmodule WandererKills.Core.Storage.CleanupWorker do
   Periodic cleanup worker for KillmailStore ETS tables.
 
   This GenServer runs periodic cleanup of old data based on configured TTLs:
-  - killmails: 7 days
-  - system_killmails: 7 days (cleaned with killmails)
+  - killmails: 2 days (reduced from 7 days)
+  - system_killmails: 2 days (cleaned with killmails)
   - system_kill_counts: Cleaned when system has no killmails
-  - system_fetch_timestamps: 1 day
-  - killmail_events: 7 days
-  - client_offsets: 3 days
+  - system_fetch_timestamps: 12 hours (reduced from 1 day)
+  - killmail_events: 2 days (reduced from 7 days)
+  - client_offsets: 1 day (reduced from 3 days)
 
   The cleanup interval can be configured via:
   ```
