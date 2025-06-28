@@ -154,7 +154,10 @@ defmodule WandererKills.Application do
   # Conditionally include web components based on configuration
   defp maybe_web_components(children) do
     if start_web_components?() do
-      children ++ [WandererKillsWeb.Endpoint]
+      children ++
+        [
+          WandererKillsWeb.Endpoint
+        ]
     else
       children
     end

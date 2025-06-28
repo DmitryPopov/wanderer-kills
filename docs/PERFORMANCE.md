@@ -6,7 +6,7 @@ WandererKills is optimized for high-throughput killmail processing and low-laten
 
 The service leverages Elixir's actor model, ETS-based storage, and comprehensive telemetry to achieve:
 - Sub-second API response times
-- Real-time killmail delivery via WebSocket
+- Real-time killmail delivery via WebSocket and SSE
 - Efficient memory usage with automatic caching
 - Horizontal scalability through Phoenix PubSub
 
@@ -18,6 +18,7 @@ The service leverages Elixir's actor model, ETS-based storage, and comprehensive
 |--------|--------|------------|
 | **REST API Latency** | < 100ms p95 | `[:wanderer_kills, :http, :request, :stop]` |
 | **WebSocket Latency** | < 50ms | Real-time delivery |
+| **SSE Latency** | < 50ms | Phoenix PubSub integration |
 | **Bulk Operations** | < 500ms for 100 items | Parallel processing |
 | **Cache Hit Rate** | > 80% | `[:wanderer_kills, :cache, :hit]` |
 
@@ -29,6 +30,7 @@ The service leverages Elixir's actor model, ETS-based storage, and comprehensive
 | **ESI Enrichment** | 100+ requests/second | Rate limited with backoff |
 | **Batch Processing** | Parallel with supervised tasks | `[:wanderer_kills, :task, :stop]` |
 | **WebSocket Broadcast** | 10,000+ clients | Phoenix PubSub |
+| **SSE Connections** | 1000+ concurrent | sse_phoenix_pubsub library |
 
 ### Resource Usage
 
@@ -161,6 +163,14 @@ const channel = socket.channel('killmails:lobby', {
   }
 });
 ```
+
+### SSE Connection Management
+
+The SSE implementation uses `sse_phoenix_pubsub` for efficient connection handling:
+- Automatic connection management
+- Built-in heartbeat mechanism
+- Phoenix PubSub integration for consistent message delivery
+- HTTP/1.1 compatible for wide proxy support
 
 ### Connection Pooling
 

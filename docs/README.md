@@ -9,6 +9,7 @@ Welcome to the WandererKills service documentation. WandererKills is a real-time
 **Covers everything you need:**
 - REST API endpoints with examples
 - WebSocket real-time integration
+- Server-Sent Events (SSE) streaming
 - PubSub integration for Elixir apps  
 - Client library usage
 - Error handling and best practices
@@ -20,8 +21,9 @@ Welcome to the WandererKills service documentation. WandererKills is a real-time
 
 1. **For HTTP/REST integration**: See [REST API Integration](API_AND_INTEGRATION_GUIDE.md#rest-api-integration)
 2. **For WebSocket real-time data**: See [WebSocket Integration](API_AND_INTEGRATION_GUIDE.md#websocket-integration)
-3. **For Elixir applications**: See [PubSub Integration](API_AND_INTEGRATION_GUIDE.md#pubsub-integration-elixir-applications)
-4. **For client library usage**: See [Client Library Integration](API_AND_INTEGRATION_GUIDE.md#client-library-integration-elixir)
+3. **For SSE streaming**: See [Server-Sent Events](API_AND_INTEGRATION_GUIDE.md#server-sent-events-sse-stream)
+4. **For Elixir applications**: See [PubSub Integration](API_AND_INTEGRATION_GUIDE.md#pubsub-integration-elixir-applications)
+5. **For client library usage**: See [Client Library Integration](API_AND_INTEGRATION_GUIDE.md#client-library-integration-elixir)
 
 ## Service Information
 
@@ -31,6 +33,8 @@ Welcome to the WandererKills service documentation. WandererKills is a real-time
 - **Status Endpoint**: `http://localhost:4004/status`
 - **Metrics**: `http://localhost:4004/metrics`
 - **WebSocket Info**: `http://localhost:4004/websocket`
+- **SSE Stream**: `http://localhost:4004/api/v1/kills/stream`
+- **OpenAPI Spec**: `http://localhost:4004/api/openapi`
 
 ## Architecture Overview
 
@@ -59,14 +63,22 @@ Best for real-time dashboards and low-latency applications.
 - Historical data preloading
 - Dynamic subscription management
 
-### 3. PubSub (Elixir)
+### 3. Server-Sent Events (SSE)
+
+Best for simple server-to-client streaming without complex client libraries.
+- HTTP-based streaming protocol
+- Native browser EventSource support
+- Automatic reconnection
+- Proxy and firewall friendly
+
+### 4. PubSub (Elixir)
 
 Best for Elixir applications in the same environment requiring high throughput.
 - Direct Phoenix.PubSub integration
 - Minimal latency
 - Event-driven architecture
 
-### 4. Client Library (Elixir)
+### 5. Client Library (Elixir)
 
 Best for type-safe integration with compile-time interface validation.
 - Full API coverage
@@ -76,7 +88,7 @@ Best for type-safe integration with compile-time interface validation.
 ## Key Features
 
 - **Caching**: Multi-tier caching with Cachex for optimal performance
-- **Event Streaming**: Real-time updates via WebSocket and PubSub
+- **Event Streaming**: Real-time updates via WebSocket, SSE, and PubSub
 - **Batch Operations**: Efficient bulk data fetching
 - **Monitoring**: Built-in telemetry, health checks, and metrics
 - **Ship Type Data**: Pre-loaded ship type information for enrichment

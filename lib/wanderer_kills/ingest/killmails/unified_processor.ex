@@ -74,16 +74,27 @@ defmodule WandererKills.Ingest.Killmails.UnifiedProcessor do
 
   # Extract monitoring logic to separate function
   defp monitor_processing_result({:ok, :kill_older} = result) do
+    Logger.debug("[UnifiedProcessor] Monitoring: killmail too old, incrementing skipped")
     Monitoring.increment_skipped()
     result
   end
 
   defp monitor_processing_result({:ok, _killmail} = result) do
+    Logger.debug(
+      "[UnifiedProcessor] Monitoring: killmail processed successfully, incrementing stored"
+    )
+
     Monitoring.increment_stored()
     result
   end
 
-  defp monitor_processing_result({:error, _reason} = result), do: result
+  defp monitor_processing_result({:error, reason} = result) do
+    Logger.debug(
+      "[UnifiedProcessor] Monitoring: killmail processing failed with error: #{inspect(reason)}"
+    )
+
+    result
+  end
 
   @doc """
   Processes a batch of killmails concurrently.

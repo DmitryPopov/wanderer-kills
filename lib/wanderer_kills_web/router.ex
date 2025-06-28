@@ -18,8 +18,21 @@ defmodule WandererKillsWeb.Router do
     plug(WandererKillsWeb.Plugs.ApiLogger)
   end
 
+  pipeline :open_api_spec do
+    plug(OpenApiSpex.Plug.PutApiSpec, module: WandererKillsWeb.ApiSpec)
+  end
+
   pipeline :infrastructure do
     plug(:accepts, ["json", "text"])
+  end
+
+  pipeline :sse do
+    plug(:accepts, ["text/event-stream", "application/json"])
+    plug(WandererKillsWeb.Plugs.ApiLogger)
+  end
+
+  pipeline :debug do
+    plug(WandererKillsWeb.Plugs.DebugOnly)
   end
 
   # Health and service discovery routes (no versioning needed)
@@ -34,6 +47,20 @@ defmodule WandererKillsWeb.Router do
     # WebSocket connection info (infrastructure/service discovery)
     get("/websocket", WebSocketController, :info)
     get("/websocket/status", WebSocketController, :status)
+  end
+
+  # OpenAPI documentation
+  scope "/api" do
+    pipe_through([:api, :open_api_spec])
+
+    get("/openapi", OpenApiSpex.Plug.RenderSpec, [])
+  end
+
+  # SSE streaming endpoint (separate pipeline for content-type handling)
+  scope "/api/v1", WandererKillsWeb do
+    pipe_through(:sse)
+
+    get("/kills/stream", KillStreamController, :stream)
   end
 
   # API v1 routes
@@ -52,8 +79,22 @@ defmodule WandererKillsWeb.Router do
     get("/subscriptions", SubscriptionController, :index)
     get("/subscriptions/stats", SubscriptionController, :stats)
     delete("/subscriptions/:subscriber_id", SubscriptionController, :delete)
+  end
 
-    # Catch-all for undefined API routes
+  # Debug endpoints - protected in production
+  scope "/api/v1", WandererKillsWeb do
+    pipe_through([:api, :debug])
+
+    # Debug endpoints for SSE
+    get("/kills/stream/cleanup", KillStreamController, :cleanup)
+    get("/kills/stream/stats", KillStreamController, :stats)
+    get("/kills/stream/test", KillStreamController, :test_broadcast)
+  end
+
+  # Catch-all for undefined API routes - must be last
+  scope "/api/v1", WandererKillsWeb do
+    pipe_through(:api)
+
     get("/*path", KillsController, :not_found)
     post("/*path", KillsController, :not_found)
     put("/*path", KillsController, :not_found)

@@ -1,0 +1,168 @@
+name: OpenAPI Breaking Change Check
+
+on:
+  pull_request:
+    paths:
+      - 'lib/**/*.ex'
+      - 'priv/openapi.json'
+      - 'mix.exs'
+
+jobs:
+  check-api-changes:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.17'
+          otp-version: '26'
+      
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
+      
+      - name: Install dependencies
+        run: |
+          mix deps.get
+          mix deps.compile
+      
+      - name: Generate current OpenAPI spec
+        run: |
+          # Start server in background to fetch spec from API endpoint
+          MIX_ENV=test mix phx.server &
+          SERVER_PID=$!
+          sleep 15  # Wait for server to start
+          
+          # Fetch the OpenAPI spec from the API endpoint
+          curl -f http://localhost:4004/api/openapi > current-spec.json || (kill $SERVER_PID && exit 1)
+          
+          # Kill the server
+          kill $SERVER_PID || true
+      
+      - name: Checkout main branch spec
+        run: |
+          # Get the OpenAPI spec from main branch
+          git show origin/main:priv/static/openapi.yaml > main-spec.yaml 2>/dev/null || echo 'openapi: "3.0.0"
+info:
+  title: "Wanderer Kills API"
+  version: "1.0.0"
+paths: {}' > main-spec.yaml
+          
+          # Convert YAML to JSON for comparison (if the main spec is YAML)
+          if [ -f main-spec.yaml ]; then
+            npx js-yaml main-spec.yaml > main-spec.json
+          else
+            cp main-spec.yaml main-spec.json
+          fi
+      
+      - name: Install OpenAPI diff tools
+        run: |
+          npm install -g @redocly/openapi-cli js-yaml
+          curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/scripts/install.sh | sh
+      
+      - name: Check for breaking changes
+        id: breaking-check
+        run: |
+          # Run oasdiff to check for breaking changes
+          oasdiff breaking main-spec.json current-spec.json > breaking-changes.txt 2>&1 || true
+          
+          # Check if there are breaking changes
+          if grep -q "breaking changes" breaking-changes.txt; then
+            echo "has_breaking_changes=true" >> $GITHUB_OUTPUT
+            echo "## ⚠️ Breaking API Changes Detected" >> breaking-changes-summary.md
+            echo "" >> breaking-changes-summary.md
+            cat breaking-changes.txt >> breaking-changes-summary.md
+          else
+            echo "has_breaking_changes=false" >> $GITHUB_OUTPUT
+            echo "## ✅ No Breaking API Changes" >> breaking-changes-summary.md
+          fi
+      
+      - name: Generate detailed diff report
+        run: |
+          echo "## API Changes Summary" > api-diff.md
+          echo "" >> api-diff.md
+          
+          # Use redocly to generate a detailed diff
+          npx @redocly/openapi-cli diff main-spec.json current-spec.json --format=markdown >> api-diff.md 2>&1 || true
+          
+          # If the diff is empty, note that
+          if [ ! -s api-diff.md ] || grep -q "No differences" api-diff.md; then
+            echo "No differences found between API specifications." > api-diff.md
+          fi
+      
+      - name: Comment PR with API changes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            // Read the diff files
+            const breakingSummary = fs.readFileSync('breaking-changes-summary.md', 'utf8');
+            const apiDiff = fs.readFileSync('api-diff.md', 'utf8');
+            
+            // Combine the reports
+            let comment = '# OpenAPI Specification Changes\n\n';
+            comment += breakingSummary + '\n\n';
+            comment += '<details>\n<summary>Detailed API Changes</summary>\n\n';
+            comment += apiDiff + '\n';
+            comment += '</details>\n\n';
+            
+            // Add instructions if there are breaking changes
+            if ('${{ steps.breaking-check.outputs.has_breaking_changes }}' === 'true') {
+              comment += '---\n\n';
+              comment += '**⚠️ Action Required**: This PR introduces breaking API changes. Please:\n';
+              comment += '1. Ensure all API consumers are notified\n';
+              comment += '2. Update API documentation\n';
+              comment += '3. Consider versioning strategy\n';
+              comment += '4. Add `breaking-change` label to this PR\n';
+            }
+            
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('# OpenAPI Specification Changes')
+            );
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }
+      
+      - name: Fail if breaking changes detected
+        if: steps.breaking-check.outputs.has_breaking_changes == 'true'
+        run: |
+          echo "❌ Breaking API changes detected!"
+          echo "Please review the changes and ensure they are intentional."
+          echo "If these changes are required, add the 'breaking-change' label to the PR."
+          exit 1

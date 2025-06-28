@@ -33,16 +33,25 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
       timestamp: DateTime.utc_now()
     }
 
+    Logger.debug("=== BROADCASTER SENDING ===",
+      system_id: system_id,
+      kills_count: length(kills),
+      message: inspect(message)
+    )
+
     # Broadcast to system-specific topic
     system_topic = PubSubTopics.system_topic(system_id)
+    Logger.debug("Broadcasting to system topic: #{system_topic}")
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, system_topic, message)
 
     # Broadcast to detailed system topic as well
     detailed_topic = PubSubTopics.system_detailed_topic(system_id)
+    Logger.debug("Broadcasting to detailed topic: #{detailed_topic}")
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, detailed_topic, message)
 
     # Broadcast to all systems topic
     all_systems_topic = PubSubTopics.all_systems_topic()
+    Logger.debug("Broadcasting to all systems topic: #{all_systems_topic}")
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, all_systems_topic, message)
 
     log_broadcast(system_id, kills)
@@ -89,11 +98,11 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
   defp log_broadcast(system_id, kills) do
     case kills do
       [] ->
-        Logger.debug("Broadcasted empty killmail update system_id=#{system_id}")
+        Logger.info("Broadcasted empty killmail update system_id=#{system_id}")
 
       kills ->
-        Logger.debug(
-          "Broadcasted killmail update system_id=#{system_id} kill_count=#{length(kills)}"
+        Logger.info(
+          "Broadcasted killmail update system_id=#{system_id} kill_count=#{length(kills)} topics=[zkb:system:#{system_id}, zkb:system:#{system_id}:detailed, zkb:all_systems]"
         )
     end
   end

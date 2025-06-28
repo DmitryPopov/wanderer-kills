@@ -1,5 +1,10 @@
 import Config
 
+# Register MIME type for Server-Sent Events
+config :mime, :types, %{
+  "text/event-stream" => ["sse"]
+}
+
 # Main application configuration with grouped settings
 config :wanderer_kills,
   # Cache configuration
@@ -105,6 +110,14 @@ config :wanderer_kills,
   # WebSocket configuration
   websocket: [
     degraded_threshold: 1000
+  ],
+
+  # SSE configuration
+  sse: [
+    max_connections: 100,
+    max_connections_per_ip: 10,
+    heartbeat_interval: 30_000,
+    connection_timeout: 300_000
   ],
 
   # Service startup configuration

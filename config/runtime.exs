@@ -78,7 +78,7 @@ if config_env() == :dev do
         ~r"lib/wanderer_kills_web/templates/.*(eex)$"
       ]
     ],
-    socket_drainer_timeout: 5_000
+    socket_drainer_timeout: 60_000
 
   # Enable Phoenix debug logs in development
   config :phoenix, :logger, true
@@ -100,7 +100,8 @@ if config_env() == :prod do
   # Disable debug features
   config :wanderer_kills, WandererKillsWeb.Endpoint,
     debug_errors: false,
-    code_reloader: false
+    code_reloader: false,
+    socket_drainer_timeout: 60_000
 
   # Disable Phoenix debug logs
   config :phoenix, :logger, false

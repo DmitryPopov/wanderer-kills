@@ -4,15 +4,15 @@
 [![Tests](https://img.shields.io/github/actions/workflow/status/guarzo/wanderer-kills/ci.yml?branch=main&label=tests)](https://github.com/guarzo/wanderer-kills/actions/workflows/ci.yml)
 [![Credo](https://img.shields.io/github/actions/workflow/status/guarzo/wanderer-kills/ci.yml?branch=main&label=credo)](https://github.com/guarzo/wanderer-kills/actions/workflows/ci.yml)
 [![Dialyzer](https://img.shields.io/github/actions/workflow/status/guarzo/wanderer-kills/ci.yml?branch=main&label=dialyzer)](https://github.com/guarzo/wanderer-kills/actions/workflows/ci.yml)
-[![Elixir](https://img.shields.io/badge/elixir-1.18%2B-purple.svg)](https://elixir-lang.org/)
+[![Elixir](https://img.shields.io/badge/elixir-1.17%2B-purple.svg)](https://elixir-lang.org/)
 [![Phoenix Framework](https://img.shields.io/badge/phoenix-1.7-orange.svg)](https://www.phoenixframework.org/)
 
-A high-performance, real-time EVE Online killmail data service built with Elixir/Phoenix. This service provides REST API and WebSocket interfaces for accessing killmail data from zKillboard.
+A high-performance, real-time EVE Online killmail data service built with Elixir/Phoenix. This service provides REST API, WebSocket, and Server-Sent Events (SSE) interfaces for accessing killmail data from zKillboard.
 
 ## Features
 
 - **Real-time Data** - Continuous killmail stream from zKillboard RedisQ
-- **Multiple Integration Methods** - REST API, WebSocket channels, and Phoenix PubSub
+- **Multiple Integration Methods** - REST API, WebSocket channels, Server-Sent Events (SSE), and Phoenix PubSub
 - **Character-Based Subscriptions** - Subscribe to killmails by character IDs (victims or attackers)
 - **System-Based Subscriptions** - Traditional solar system ID filtering
 - **Flexible Filtering** - Combined system and character filtering with OR logic
@@ -50,8 +50,8 @@ docker-compose up -d
 ### Development Setup
 
 1. **Prerequisites**
-   - Elixir 1.18+
-   - OTP 25.0+
+   - Elixir 1.17+
+   - OTP 26.0+
 
 2. **Clone and Setup**
 
@@ -87,12 +87,14 @@ The service will be available at `http://localhost:4004`
 | GET | `/api/v1/kills/cached/{system_id}` | Get cached kills only |
 | GET | `/api/v1/killmail/{killmail_id}` | Get specific killmail |
 | GET | `/api/v1/kills/count/{system_id}` | Get kill count |
+| GET | `/api/v1/kills/stream` | Server-Sent Events stream |
 | POST | `/api/v1/subscriptions` | Create webhook subscription |
 | GET | `/api/v1/subscriptions` | List webhook subscriptions |
 | DELETE | `/api/v1/subscriptions/{subscriber_id}` | Delete webhook subscription |
 | GET | `/health` | Health check |
 | GET | `/status` | Service status |
 | GET | `/websocket` | WebSocket connection info |
+| GET | `/api/openapi` | OpenAPI specification |
 
 ### WebSocket Connection
 
@@ -157,7 +159,7 @@ channel.push('unsubscribe_characters', { character_ids: [95465499] })
 
 ## Subscription Types
 
-WandererKills offers two distinct subscription mechanisms for receiving killmail updates:
+WandererKills offers three distinct subscription mechanisms for receiving killmail updates:
 
 ### WebSocket Subscriptions
 **Real-time bidirectional communication**
@@ -180,6 +182,40 @@ const channel = socket.channel('killmails:lobby', {
 channel.push('subscribe_systems', { systems: [30000144] });
 channel.push('unsubscribe_characters', { characters: [95465499] });
 ```
+
+### Server-Sent Events (SSE) Subscriptions
+**Simple unidirectional streaming**
+
+SSE provides a lightweight, HTTP-based streaming protocol perfect for server-side applications that need real-time updates without the complexity of WebSockets.
+
+```bash
+# Connect to SSE stream with filters
+curl -N -H "Accept: text/event-stream" \
+  "http://localhost:4004/api/v1/kills/stream?system_ids=30000142,30000144&min_value=100000000"
+```
+
+**JavaScript Example:**
+```javascript
+const eventSource = new EventSource('/api/v1/kills/stream?system_ids=30000142&character_ids=95465499');
+
+eventSource.addEventListener('killmail', (event) => {
+  const killmail = JSON.parse(event.data);
+  console.log('New killmail:', killmail);
+});
+
+eventSource.addEventListener('error', (event) => {
+  if (event.readyState === EventSource.CLOSED) {
+    console.log('Connection closed');
+  }
+});
+```
+
+**Key Features:**
+- Simple HTTP-based protocol
+- Automatic reconnection built into browsers
+- Works through proxies and firewalls
+- No special libraries required for most languages
+- Efficient for one-way server-to-client communication
 
 ### Webhook Subscriptions
 **HTTP callback-based notifications**
@@ -225,23 +261,29 @@ Webhook notifications are sent as JSON POST requests:
 }
 ```
 
-### Comparison: WebSocket vs Webhook
+### Comparison: WebSocket vs SSE vs Webhook
 
-| Feature | WebSocket | Webhook |
-|---------|-----------|---------|
-| **Connection** | Persistent, stateful | Stateless HTTP requests |
-| **Latency** | Very low (direct push) | Higher (HTTP overhead) |
-| **Reliability** | Best-effort, client handles reconnects | Retryable with HTTP client |
-| **Management** | Dynamic (live subscription changes) | Static (set at creation) |
-| **Filtering** | Interactive updates | Fixed at subscription time |
-| **Preloading** | Full preload support with batching | Basic preload on creation |
-| **Use Case** | Real-time dashboards, live monitoring | Server integrations, webhooks |
-| **Registration** | WebSocket channel join | REST API endpoint |
+| Feature | WebSocket | SSE | Webhook |
+|---------|-----------|-----|---------|
+| **Connection** | Persistent, bidirectional | Persistent, unidirectional | Stateless HTTP requests |
+| **Latency** | Very low | Very low | Higher (HTTP overhead) |
+| **Reliability** | Client handles reconnects | Auto-reconnect built-in | Retryable with HTTP client |
+| **Management** | Dynamic (live changes) | Query params only | Static (set at creation) |
+| **Filtering** | Interactive updates | Fixed at connection | Fixed at subscription time |
+| **Preloading** | Full support with batching | Batch on connection | Basic preload on creation |
+| **Complexity** | Requires client library | Native browser support | Simple HTTP POST |
+| **Use Case** | Interactive apps, gaming | Live feeds, dashboards | Server integrations |
+| **Registration** | WebSocket channel join | HTTP GET with params | REST API endpoint |
 
 **Choose WebSocket for:**
-- Real-time dashboards and live monitoring
-- Interactive applications requiring low latency
+- Interactive applications requiring bidirectional communication
 - Applications that need dynamic subscription management
+- Gaming or chat-like applications
+
+**Choose SSE for:**
+- Simple real-time dashboards and monitoring
+- Browser-based applications without complex client libraries
+- One-way server-to-client streaming
 
 **Choose Webhooks for:**
 - Server-to-server integrations
@@ -278,7 +320,9 @@ curl "http://localhost:4004/api/v1/kills/system/30000142?since_hours=24&limit=50
                               ├──────────────────────────┤
                               │ • REST API               │
                               │ • WebSocket Channels     │
+                              │ • Server-Sent Events     │
                               │ • Phoenix PubSub         │
+                              │ • Webhook Subscriptions  │
                               └──────────────────────────┘
 ```
 

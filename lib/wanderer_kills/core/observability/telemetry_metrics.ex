@@ -110,6 +110,19 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
 
     # Preload delivery metrics
     :ets.insert(@table, {:kills_delivered, 0})
+
+    # SSE metrics
+    :ets.insert(
+      @table,
+      {:sse,
+       %{
+         killmail_events: 0,
+         heartbeat_events: 0,
+         error_events: 0,
+         connected_events: 0,
+         batch_events: 0
+       }}
+    )
   end
 
   defp attach_handlers do
@@ -130,11 +143,19 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
       &__MODULE__.handle_preload_event/4,
       nil
     )
+
+    :telemetry.attach(
+      "telemetry-metrics-sse-handler",
+      [:wanderer_kills, :sse, :event, :sent],
+      &__MODULE__.handle_sse_event/4,
+      nil
+    )
   end
 
   defp detach_handlers do
     :telemetry.detach("telemetry-metrics-task-handler")
     :telemetry.detach("telemetry-metrics-preload-handler")
+    :telemetry.detach("telemetry-metrics-sse-handler")
   end
 
   @doc false
@@ -164,6 +185,47 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
       ) do
     count = Map.get(measurements, :count, 0)
     :ets.update_counter(@table, :kills_delivered, count, {:kills_delivered, 0})
+  end
+
+  @doc false
+  def handle_sse_event(
+        [:wanderer_kills, :sse, :event, :sent],
+        _measurements,
+        metadata,
+        _config
+      ) do
+    event_type = Map.get(metadata, :event_type, "unknown")
+
+    case :ets.lookup(@table, :sse) do
+      [{:sse, current_metrics}] ->
+        updated_metrics = update_sse_event_counter(current_metrics, event_type)
+        :ets.insert(@table, {:sse, updated_metrics})
+
+      [] ->
+        initial_metrics = initialize_sse_metrics(event_type)
+        :ets.insert(@table, {:sse, initial_metrics})
+    end
+  end
+
+  defp update_sse_event_counter(current_metrics, event_type) do
+    case event_type do
+      "killmail" -> Map.update(current_metrics, :killmail_events, 1, &(&1 + 1))
+      "heartbeat" -> Map.update(current_metrics, :heartbeat_events, 1, &(&1 + 1))
+      "error" -> Map.update(current_metrics, :error_events, 1, &(&1 + 1))
+      "connected" -> Map.update(current_metrics, :connected_events, 1, &(&1 + 1))
+      "batch" -> Map.update(current_metrics, :batch_events, 1, &(&1 + 1))
+      _ -> current_metrics
+    end
+  end
+
+  defp initialize_sse_metrics(event_type) do
+    %{
+      killmail_events: if(event_type == "killmail", do: 1, else: 0),
+      heartbeat_events: if(event_type == "heartbeat", do: 1, else: 0),
+      error_events: if(event_type == "error", do: 1, else: 0),
+      connected_events: if(event_type == "connected", do: 1, else: 0),
+      batch_events: if(event_type == "batch", do: 1, else: 0)
+    }
   end
 
   defp increment_counter(key) do

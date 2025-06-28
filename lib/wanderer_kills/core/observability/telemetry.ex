@@ -37,6 +37,13 @@ defmodule WandererKills.Core.Observability.Telemetry do
   - `[:wanderer_kills, :websocket, :connection]` - When WebSocket connections change
   - `[:wanderer_kills, :websocket, :subscription]` - When WebSocket subscriptions change
 
+  SSE events:
+  - `[:wanderer_kills, :sse, :connection, :start]` - When SSE connection is established
+  - `[:wanderer_kills, :sse, :connection, :stop]` - When SSE connection is closed
+  - `[:wanderer_kills, :sse, :event, :sent]` - When SSE event is sent
+  - `[:wanderer_kills, :sse, :manager, :started]` - When SSE manager starts
+  - `[:wanderer_kills, :sse, :error]` - When SSE error occurs
+
   Character subscription events:
   - `[:wanderer_kills, :character, :match]` - When character matching is performed
   - `[:wanderer_kills, :character, :filter]` - When character filtering is performed
@@ -525,6 +532,20 @@ defmodule WandererKills.Core.Observability.Telemetry do
       nil
     )
 
+    # SSE handlers
+    :telemetry.attach_many(
+      "wanderer-kills-sse-handler",
+      [
+        [:wanderer_kills, :sse, :connection, :start],
+        [:wanderer_kills, :sse, :connection, :stop],
+        [:wanderer_kills, :sse, :event, :sent],
+        [:wanderer_kills, :sse, :manager, :started],
+        [:wanderer_kills, :sse, :error]
+      ],
+      &Telemetry.handle_sse_event/4,
+      nil
+    )
+
     # Attach batch processing telemetry handlers
     BatchTelemetry.attach_handlers()
 
@@ -548,6 +569,7 @@ defmodule WandererKills.Core.Observability.Telemetry do
     :telemetry.detach("wanderer-kills-task-handler")
     :telemetry.detach("wanderer-kills-character-handler")
     :telemetry.detach("wanderer-kills-system-handler")
+    :telemetry.detach("wanderer-kills-sse-handler")
 
     # Detach batch processing telemetry handlers
     BatchTelemetry.detach_handlers()
@@ -830,4 +852,40 @@ defmodule WandererKills.Core.Observability.Telemetry do
   defp format_operation_details(%{system_count: count}), do: " (#{count} systems)"
   defp format_operation_details(%{subscription_id: sub_id}), do: " (#{sub_id})"
   defp format_operation_details(_), do: ""
+
+  @doc """
+  Handles SSE telemetry events.
+  """
+  def handle_sse_event([:wanderer_kills, :sse, type | rest], measurements, metadata, _config) do
+    case [type | rest] do
+      [:connection, :start] ->
+        Logger.info("[SSE] Connection started",
+          connection_id: metadata.connection_id,
+          filters: metadata.filters,
+          ip: metadata.ip
+        )
+
+      [:connection, :stop] ->
+        Logger.info("[SSE] Connection stopped",
+          connection_id: metadata.connection_id,
+          duration_seconds: Map.get(measurements, :duration_seconds, 0),
+          total_connections: Map.get(measurements, :total_connections, 0)
+        )
+
+      [:event, :sent] ->
+        Logger.debug("[SSE] Event sent",
+          connection_id: metadata.connection_id,
+          event_type: metadata.event_type
+        )
+
+      [:manager, :started] ->
+        Logger.info("[SSE] Manager started")
+
+      [:error] ->
+        Logger.error("[SSE] Error occurred",
+          error: metadata.error,
+          connection_id: metadata[:connection_id]
+        )
+    end
+  end
 end

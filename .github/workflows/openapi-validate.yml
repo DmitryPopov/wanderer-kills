@@ -1,0 +1,89 @@
+name: Validate OpenAPI Specification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-openapi:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.17'
+          otp-version: '26'
+      
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
+      
+      - name: Install dependencies
+        run: |
+          mix deps.get
+          mix deps.compile
+      
+      - name: Validate OpenAPI spec
+        run: |
+          npm install -g @redocly/openapi-cli
+          npx @redocly/openapi-cli lint priv/static/openapi.yaml
+      
+      - name: Upload OpenAPI spec as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-spec
+          path: priv/static/openapi.yaml
+          retention-days: 30
+      
+      - name: Check spec can be served
+        run: |
+          # Start the Phoenix server in the background
+          MIX_ENV=test mix phx.server &
+          SERVER_PID=$!
+          
+          # Wait for server to be ready with retries
+          echo "Waiting for Phoenix server to start..."
+          max_attempts=30
+          attempt=0
+          
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -f -s http://localhost:4004/api/openapi > /dev/null 2>&1; then
+              echo "✓ Server is ready!"
+              break
+            fi
+            
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts - Server not ready yet, waiting..."
+            sleep 2
+          done
+          
+          if [ $attempt -eq $max_attempts ]; then
+            echo "❌ Server failed to start after $max_attempts attempts"
+            kill $SERVER_PID 2>/dev/null || true
+            exit 1
+          fi
+          
+          # Verify the OpenAPI spec endpoint works
+          echo "Fetching OpenAPI spec..."
+          curl -f http://localhost:4004/api/openapi || {
+            echo "❌ Failed to fetch OpenAPI spec"
+            kill $SERVER_PID
+            exit 1
+          }
+          
+          echo "✓ OpenAPI spec endpoint is working!"
+          
+          # Kill the server
+          kill $SERVER_PID

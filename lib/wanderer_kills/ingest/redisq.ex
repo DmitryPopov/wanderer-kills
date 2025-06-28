@@ -364,11 +364,11 @@ defmodule WandererKills.Ingest.RedisQ do
 
     case UnifiedProcessor.process_killmail(merged, cutoff) do
       {:ok, :kill_older} ->
-        Logger.debug("[RedisQ] Kill is older than cutoff → skipping.")
+        Logger.info("[RedisQ] Kill is older than cutoff → skipping.")
         {:ok, :kill_older}
 
       {:ok, enriched_killmail} ->
-        Logger.debug("[RedisQ] Successfully parsed & stored new killmail.")
+        Logger.info("[RedisQ] Successfully parsed & stored new killmail.")
 
         # Broadcast kill update via PubSub using the enriched killmail
         broadcast_killmail_update_enriched(enriched_killmail)
@@ -537,9 +537,14 @@ defmodule WandererKills.Ingest.RedisQ do
     # Broadcast detailed kill update - convert to map for compatibility
     killmail_map = Killmail.to_map(killmail)
 
+    # Send to subscription workers
     SubscriptionManager.broadcast_killmail_update_async(system_id, [
       killmail_map
     ])
+
+    # Also broadcast to PubSub topics for SSE and WebSocket channels
+    alias WandererKills.Subs.Subscriptions.Broadcaster
+    Broadcaster.broadcast_killmail_update(system_id, [killmail_map])
 
     # Also broadcast kill count update (increment by 1)
     SubscriptionManager.broadcast_killmail_count_update_async(system_id, 1)

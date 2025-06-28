@@ -7,10 +7,45 @@ defmodule WandererKillsWeb.KillsController do
   """
 
   use Phoenix.Controller, namespace: WandererKillsWeb
+  use OpenApiSpex.ControllerSpecs
+
   import WandererKillsWeb.Api.Validators
   require Logger
   alias WandererKills.Core.Client
   alias WandererKills.Core.Support.Error
+
+  operation(:list,
+    summary: "List kills for a system",
+    description: "Fetches killmail data for a specific system with optional time filtering",
+    parameters: [
+      system_id: [
+        in: :path,
+        description: "EVE Online system ID",
+        type: :integer,
+        required: true,
+        example: 30_000_142
+      ],
+      since_hours: [
+        in: :query,
+        description: "Fetch kills from the last N hours (default: 24)",
+        type: :integer,
+        required: false,
+        example: 24
+      ],
+      limit: [
+        in: :query,
+        description: "Maximum number of kills to return",
+        type: :integer,
+        required: false,
+        example: 100
+      ]
+    ],
+    responses: %{
+      200 => {"Success", "application/json", WandererKillsWeb.Schemas.KillsResponse},
+      400 => {"Invalid parameters", "application/json", WandererKillsWeb.Schemas.Error},
+      500 => {"Server error", "application/json", WandererKillsWeb.Schemas.Error}
+    }
+  )
 
   @doc """
   Lists kills for a specific system with time filtering.

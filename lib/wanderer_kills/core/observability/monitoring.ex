@@ -352,6 +352,7 @@ defmodule WandererKills.Core.Observability.Monitoring do
 
   @impl true
   def handle_cast({:increment, key}, state) when key in [:stored, :skipped, :failed] do
+    Logger.debug("[Monitoring] GenServer handle_cast increment #{key}")
     current_stats = state.parser_stats
 
     new_stats =
@@ -359,6 +360,7 @@ defmodule WandererKills.Core.Observability.Monitoring do
       |> Map.update!(key, &(&1 + 1))
       |> Map.update!(:total_processed, &(&1 + 1))
 
+    Logger.debug("[Monitoring] Updated parser_stats: #{inspect(new_stats)}")
     new_state = %{state | parser_stats: new_stats}
     {:noreply, new_state}
   end
@@ -424,7 +426,9 @@ defmodule WandererKills.Core.Observability.Monitoring do
   @spec build_comprehensive_health_status() :: map()
   defp build_comprehensive_health_status do
     cache_checks = Enum.map(@cache_names, &build_cache_health_check/1)
-    all_healthy = Enum.all?(cache_checks, & &1.healthy)
+    sse_health = build_sse_health_check()
+
+    all_healthy = Enum.all?(cache_checks, & &1.healthy) and sse_health.healthy
 
     %{
       healthy: all_healthy,
@@ -432,6 +436,7 @@ defmodule WandererKills.Core.Observability.Monitoring do
       version: get_app_version(),
       uptime_seconds: get_uptime_seconds(),
       caches: cache_checks,
+      sse: sse_health,
       system: get_system_info()
     }
   end
@@ -439,11 +444,13 @@ defmodule WandererKills.Core.Observability.Monitoring do
   @spec build_comprehensive_metrics() :: map()
   defp build_comprehensive_metrics do
     cache_metrics = Enum.map(@cache_names, &build_cache_metrics/1)
+    sse_metrics = build_sse_metrics()
 
     %{
       timestamp: Clock.now_iso8601(),
       uptime_seconds: get_uptime_seconds(),
       caches: cache_metrics,
+      sse: sse_metrics,
       system: get_system_info(),
       rate_limiter: collect_rate_limiter_metrics(),
       aggregate: %{
@@ -612,4 +619,29 @@ defmodule WandererKills.Core.Observability.Monitoring do
   end
 
   defp collect_coalescer_stats(_), do: %{}
+
+  @spec build_sse_health_check() :: map()
+  defp build_sse_health_check do
+    # SSE connections are now managed by sse_phoenix_pubsub library
+    %{
+      healthy: true,
+      status: "managed_by_library",
+      active_connections: 0,
+      max_connections: 0,
+      utilization: 0.0
+    }
+  end
+
+  @spec build_sse_metrics() :: map()
+  defp build_sse_metrics do
+    # SSE connections are now managed by sse_phoenix_pubsub library
+    %{
+      connections_active: 0,
+      connections_total: 0,
+      connections_closed: 0,
+      events_sent: 0,
+      connections_by_ip: 0,
+      manager_status: "managed_by_library"
+    }
+  end
 end

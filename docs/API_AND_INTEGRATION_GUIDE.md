@@ -13,6 +13,8 @@ WandererKills is a real-time EVE Online killmail data service that provides mult
 **Integration Options:**
 - **REST API** - HTTP endpoints for fetching killmail data
 - **WebSocket** - Real-time kill notifications via Phoenix channels  
+- **Server-Sent Events (SSE)** - Simple HTTP-based real-time streaming
+- **Webhook Subscriptions** - HTTP callbacks for killmail updates
 - **PubSub** - Direct message broadcasting for Elixir applications
 - **Client Library** - Elixir behaviour for type-safe integration
 
@@ -34,6 +36,7 @@ http://localhost:4004/api/v1
 | GET    | `/kills/cached/{system_id}`     | Get cached kills only       |
 | GET    | `/killmail/{killmail_id}`       | Get specific killmail       |
 | GET    | `/kills/count/{system_id}`      | Get kill count for system   |
+| GET    | `/kills/stream`                 | Server-Sent Events stream   |
 | POST   | `/subscriptions`                | Create webhook subscription |
 | GET    | `/subscriptions`                | List all subscriptions      |
 | GET    | `/subscriptions/stats`          | Get subscription statistics |
@@ -49,6 +52,7 @@ http://localhost:4004/api/v1
 | GET    | `/metrics`          | Service metrics             |
 | GET    | `/websocket`        | WebSocket connection info   |
 | GET    | `/websocket/status` | WebSocket server statistics |
+| GET    | `/api/openapi`      | OpenAPI specification (JSON)|
 
 ### System Kills
 
@@ -202,6 +206,133 @@ GET /api/v1/kills/count/{system_id}
   "timestamp": "2024-01-15T15:00:00Z"
 }
 ```
+
+### Server-Sent Events (SSE) Stream
+
+```http
+GET /api/v1/kills/stream
+```
+
+Real-time streaming of killmail data using Server-Sent Events protocol. Perfect for server-side applications that need a simple, unidirectional stream of killmail updates. 
+
+The SSE implementation uses the `sse_phoenix_pubsub` library to seamlessly integrate with Phoenix PubSub, ensuring consistent message delivery across all subscription types.
+
+**Query Parameters:**
+- `system_ids` - Comma-separated list of system IDs to filter (e.g., `30000142,30000144`)
+- `character_ids` - Comma-separated list of character IDs to track as victim/attacker
+- `min_value` - Minimum ISK value threshold for killmails
+
+**Example Request:**
+```bash
+curl -N -H "Accept: text/event-stream" \
+  "http://localhost:4004/api/v1/kills/stream?system_ids=30000142&min_value=100000000"
+```
+
+**Response Headers:**
+
+```http
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+```
+
+**Event Types:**
+
+1. **Connected Event** (sent immediately on connection):
+
+```
+event: connected
+data: SSE stream connected
+```
+
+2. **Killmail Event** (new killmail data):
+
+```
+event: killmail
+data: {"killmail_id": 123456789, "kill_time": "2024-01-15T14:30:00Z", "solar_system_id": 30000142, ...}
+id: 123456789
+```
+
+3. **Batch Event** (historical data on connection):
+
+```
+event: batch
+data: [{"killmail_id": 123456789, ...}, {"killmail_id": 123456790, ...}]
+```
+
+4. **Heartbeat Event** (every 30 seconds):
+
+```
+event: heartbeat
+data: {"timestamp": "2024-01-15T14:30:00Z"}
+```
+
+5. **Error Event** (on error conditions):
+
+```
+event: error
+data: {"error": "connection_limit", "message": "Too many connections", "timestamp": "2024-01-15T14:30:00Z"}
+```
+
+**JavaScript Example:**
+```javascript
+const eventSource = new EventSource('/api/v1/kills/stream?system_ids=30000142');
+
+eventSource.addEventListener('connected', (event) => {
+  console.log('Connected to SSE stream');
+});
+
+eventSource.addEventListener('killmail', (event) => {
+  const killmail = JSON.parse(event.data);
+  console.log('New killmail:', killmail);
+});
+
+eventSource.addEventListener('batch', (event) => {
+  const killmails = JSON.parse(event.data);
+  console.log('Historical killmails:', killmails);
+});
+
+eventSource.addEventListener('error', (event) => {
+  if (event.readyState === EventSource.CLOSED) {
+    console.log('Connection was closed');
+  } else {
+    const error = JSON.parse(event.data);
+    console.error('SSE error:', error);
+  }
+});
+```
+
+**Python Example:**
+```python
+import sseclient
+import requests
+
+def stream_killmails():
+    url = 'http://localhost:4004/api/v1/kills/stream?system_ids=30000142'
+    response = requests.get(url, stream=True, headers={'Accept': 'text/event-stream'})
+    client = sseclient.SSEClient(response)
+    
+    for event in client.events():
+        if event.event == 'killmail':
+            killmail = json.loads(event.data)
+            print(f"New killmail: {killmail['killmail_id']}")
+        elif event.event == 'error':
+            error = json.loads(event.data)
+            print(f"Error: {error['message']}")
+```
+
+**Connection Limits:**
+- Maximum 100 concurrent SSE connections total
+- Maximum 10 connections per IP address
+- Connections timeout after 5 minutes of inactivity
+- Automatic reconnection with exponential backoff recommended
+
+**Advantages over WebSocket:**
+- Simpler protocol, works over standard HTTP
+- Built-in reconnection in browsers
+- Better proxy/firewall compatibility
+- No need for bidirectional communication
+- Native EventSource API in browsers
 
 ### Webhook Subscriptions
 
