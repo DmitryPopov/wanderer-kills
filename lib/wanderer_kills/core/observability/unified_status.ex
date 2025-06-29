@@ -169,6 +169,9 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
     # Calculate processing lag based on last kill received
     processing_lag = calculate_processing_lag(redisq_stats)
 
+    # Calculate seconds since last killmail
+    last_killmail_seconds = seconds_since_last_killmail(redisq_stats)
+
     %{
       # RedisQ metrics
       redisq_received: redisq_received,
@@ -177,7 +180,7 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
       redisq_errors: redisq_errors,
       redisq_error_rate: error_rate(redisq_errors, redisq_received),
       redisq_systems: redisq_stats |> Map.get(:systems_active, MapSet.new()) |> MapSet.size(),
-      redisq_last_killmail_ago_seconds: seconds_since_last_killmail(redisq_stats),
+      redisq_last_killmail_ago_seconds: last_killmail_seconds,
       # Parser metrics
       parser_stored: parser_stored,
       parser_skipped: Map.get(parser_stats, :skipped, 0),

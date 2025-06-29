@@ -155,6 +155,9 @@ defmodule WandererKills.Ingest.RedisQ do
     # Update statistics based on result
     new_stats = update_stats(stats, result)
 
+    # Update ETS immediately for real-time dashboard metrics
+    update_ets_stats(new_stats)
+
     {delay_ms, new_backoff} = next_schedule(result, backoff)
     schedule_poll(delay_ms)
 
@@ -285,14 +288,19 @@ defmodule WandererKills.Ingest.RedisQ do
 
   defp track_system_activity(stats, _), do: stats
 
+  # Update ETS with current stats for real-time dashboard access
+  defp update_ets_stats(stats) do
+    if :ets.info(EtsOwner.wanderer_kills_stats_table()) != :undefined do
+      :ets.insert(EtsOwner.wanderer_kills_stats_table(), {:redisq_stats, stats})
+    end
+  end
+
   # Log summary of activity over the past minute
   defp log_summary(stats) do
     duration = DateTime.diff(DateTime.utc_now(), stats.last_reset, :second)
 
-    # Store stats in ETS for unified status reporter
-    if :ets.info(EtsOwner.wanderer_kills_stats_table()) != :undefined do
-      :ets.insert(EtsOwner.wanderer_kills_stats_table(), {:redisq_stats, stats})
-    end
+    # Store stats in ETS for unified status reporter (this is now also done in real-time)
+    update_ets_stats(stats)
 
     # Note: Summary logging now handled by UnifiedStatus module
     # Only log if there's significant error activity

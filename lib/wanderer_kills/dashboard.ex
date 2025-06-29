@@ -13,8 +13,7 @@ defmodule WandererKills.Dashboard do
 
   alias WandererKills.Core.Observability.{
     HealthChecks,
-    UnifiedStatus,
-    WebSocketStats
+    UnifiedStatus
   }
 
   alias WandererKills.Utils
@@ -69,8 +68,8 @@ defmodule WandererKills.Dashboard do
         cache: cache_health
       }
 
-      # Get websocket stats safely
-      websocket_stats = get_websocket_stats()
+      # Get websocket stats from unified status 
+      websocket_stats = Utils.safe_get(status, [:websocket], %{})
 
       # Get uptime and version safely
       uptime = format_uptime(Utils.safe_get(status, [:system, :uptime_seconds], 0))
@@ -155,12 +154,16 @@ defmodule WandererKills.Dashboard do
   defp extract_component_metrics(health_data, :cache) do
     # For cache health, get the actual metrics from the cache health check
     case HealthChecks.get_cache_metrics() do
-      {:ok, %{metrics: %{aggregate: aggregate_metrics}}} ->
+      {:ok, %{metrics: %{aggregate: aggregate_metrics, caches: caches}}} ->
+        # Get the first cache's actual metrics since aggregate might be empty
+        cache_data = List.first(caches) || %{}
+
         %{
           status: Map.get(health_data, :status, "healthy"),
           metrics: %{
-            hit_rate: Map.get(aggregate_metrics, :average_hit_rate, 0.0) * 100,
-            size: Map.get(aggregate_metrics, :total_size, 0),
+            hit_rate:
+              Map.get(cache_data, :hit_rate, Map.get(aggregate_metrics, :average_hit_rate, 0.0)),
+            size: Map.get(cache_data, :size, Map.get(aggregate_metrics, :total_size, 0)),
             eviction_count: Map.get(aggregate_metrics, :total_evictions, 0),
             expiration_count: Map.get(aggregate_metrics, :total_expirations, 0)
           }
@@ -194,13 +197,6 @@ defmodule WandererKills.Dashboard do
       Float.round(min(usage, 100.0), 1)
     rescue
       _ -> 0.0
-    end
-  end
-
-  defp get_websocket_stats do
-    case WebSocketStats.get_stats() do
-      {:ok, stats} -> stats
-      _ -> %{}
     end
   end
 
@@ -266,12 +262,12 @@ defmodule WandererKills.Dashboard do
 
   defp get_redisq_stats(status) do
     # Extract RedisQ metrics from the :processing section
-    total_processed = Utils.safe_get(status, [:metrics, :processing, :redisq_received], 0)
+    total_processed = Utils.safe_get(status, [:processing, :redisq_received], 0)
 
     last_killmail_ago =
-      Utils.safe_get(status, [:metrics, :processing, :redisq_last_killmail_ago_seconds], nil)
+      Utils.safe_get(status, [:processing, :redisq_last_killmail_ago_seconds], nil)
 
-    processing_lag = Utils.safe_get(status, [:metrics, :processing, :processing_lag_seconds], 0)
+    processing_lag = Utils.safe_get(status, [:processing, :processing_lag_seconds], 0)
 
     # Calculate processing rate using window-based statistics
     processing_rate = calculate_current_processing_rate(status)
@@ -294,7 +290,7 @@ defmodule WandererKills.Dashboard do
     case :ets.info(EtsOwner.wanderer_kills_stats_table()) do
       :undefined ->
         # If ETS table is not available, fall back to simple calculation
-        total = Utils.safe_get(status, [:metrics, :processing, :redisq_received], 0)
+        total = Utils.safe_get(status, [:processing, :redisq_received], 0)
         calculate_simple_rate_from_total(total)
 
       _ ->
@@ -310,7 +306,7 @@ defmodule WandererKills.Dashboard do
 
       _ ->
         # No stats available, use simple calculation
-        total = Utils.safe_get(status, [:metrics, :processing, :redisq_received], 0)
+        total = Utils.safe_get(status, [:processing, :redisq_received], 0)
         calculate_simple_rate_from_total(total)
     end
   end
@@ -345,6 +341,7 @@ defmodule WandererKills.Dashboard do
 
   defp format_last_processed_time(seconds_ago) when is_number(seconds_ago) do
     cond do
+      seconds_ago >= 999_999 -> "Never"
       seconds_ago < 60 -> "#{round(seconds_ago)} seconds ago"
       seconds_ago < 3600 -> "#{round(seconds_ago / 60)} minutes ago"
       seconds_ago < 86_400 -> "#{round(seconds_ago / 3600)} hours ago"
@@ -352,7 +349,7 @@ defmodule WandererKills.Dashboard do
     end
   end
 
-  defp format_last_processed_time(_), do: "Unknown"
+  defp format_last_processed_time(_value), do: "Unknown"
 
   # Returns the Erlang VM's wall clock time since start (not the specific application runtime)
   # This represents how long the BEAM VM has been running, which may be longer than

@@ -296,7 +296,7 @@ defmodule WandererKillsWeb.PageHTML do
         </div>
         <div class="metric-row">
           <span class="metric-label">Last Processed</span>
-          <span class="metric-value">#{format_time_ago(redisq_stats.last_processed)}</span>
+          <span class="metric-value">#{redisq_stats.last_processed}</span>
         </div>
       </div>
     </div>
@@ -364,29 +364,6 @@ defmodule WandererKillsWeb.PageHTML do
   end
 
   defp format_memory_mb(_), do: "0"
-
-  defp format_time_ago(nil), do: "Never"
-
-  defp format_time_ago(timestamp) when is_binary(timestamp) do
-    case DateTime.from_iso8601(timestamp) do
-      {:ok, dt, _offset} -> format_time_ago(dt)
-      _ -> "Unknown"
-    end
-  end
-
-  defp format_time_ago(%DateTime{} = dt) do
-    now = DateTime.utc_now()
-    diff_seconds = DateTime.diff(now, dt, :second)
-
-    cond do
-      diff_seconds < 60 -> "#{diff_seconds}s ago"
-      diff_seconds < 3600 -> "#{div(diff_seconds, 60)}m ago"
-      diff_seconds < 86_400 -> "#{div(diff_seconds, 3600)}h ago"
-      true -> "#{div(diff_seconds, 86_400)}d ago"
-    end
-  end
-
-  defp format_time_ago(_), do: "Unknown"
 
   defp health_status_class(status) when status in ["healthy", :healthy, "ok", :ok], do: "success"
 
