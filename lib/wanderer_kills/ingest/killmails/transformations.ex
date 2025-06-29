@@ -174,6 +174,7 @@ defmodule WandererKills.Ingest.Killmails.Transformations do
     killmail
     |> flatten_victim_data()
     |> flatten_attackers_data()
+    |> flatten_system_data()
   end
 
   @doc """
@@ -234,6 +235,29 @@ defmodule WandererKills.Ingest.Killmails.Transformations do
       end)
 
     Map.put(killmail, "attackers", flattened_attackers)
+  end
+
+  @doc """
+  Flattens system entity data to top-level fields.
+
+  Extracts system information from nested structures to flat fields.
+
+  ## Parameters
+  - `killmail` - Killmail containing system with nested entity data
+
+  ## Returns
+  - Killmail with flattened system data
+  """
+  @spec flatten_system_data(map()) :: map()
+  def flatten_system_data(killmail) when is_map(killmail) do
+    killmail
+    |> add_flat_field("solar_system_name", ["system", "name"])
+    |> remove_nested_system_data()
+  end
+
+  # Removes nested system data to avoid duplication after flattening
+  defp remove_nested_system_data(data) when is_map(data) do
+    Map.delete(data, "system")
   end
 
   # ============================================================================
@@ -406,6 +430,54 @@ defmodule WandererKills.Ingest.Killmails.Transformations do
       {:error, reason} ->
         # Preserve the original ESI error for better diagnostics
         {:error, reason}
+    end
+  end
+
+  # ============================================================================
+  # System Name Enrichment
+  # ============================================================================
+
+  @doc """
+  Enriches killmail with system name.
+
+  This function adds "solar_system_name" field to the killmail
+  by looking up the system ID via ESI.
+
+  ## Parameters
+  - `killmail` - Killmail to enrich with system name
+
+  ## Returns
+  - `{:ok, enriched_killmail}` - Killmail with system name added
+  """
+  @spec enrich_with_system_name(map()) :: {:ok, map()}
+  def enrich_with_system_name(killmail) when is_map(killmail) do
+    Logger.debug("Starting system name enrichment for killmail",
+      killmail_id: Map.get(killmail, "killmail_id")
+    )
+
+    {:ok, enriched_killmail} = add_system_name(killmail)
+
+    Logger.debug("Completed system name enrichment for killmail",
+      killmail_id: Map.get(killmail, "killmail_id")
+    )
+
+    {:ok, enriched_killmail}
+  end
+
+  # Adds system name to killmail from enriched system data
+  defp add_system_name(killmail) do
+    case get_in(killmail, ["system", "name"]) do
+      name when is_binary(name) ->
+        {:ok, Map.put(killmail, "solar_system_name", name)}
+
+      _ ->
+        # Log but don't fail the enrichment for missing system names
+        Logger.debug("Could not get system name from enriched data",
+          system_id: Map.get(killmail, "system_id"),
+          killmail_id: Map.get(killmail, "killmail_id")
+        )
+
+        {:ok, killmail}
     end
   end
 

@@ -10,6 +10,10 @@ on:
 jobs:
   check-api-changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     
     steps:
       - name: Checkout PR branch
@@ -96,8 +100,8 @@ jobs:
           echo "## API Changes Summary" > api-diff.md
           echo "" >> api-diff.md
           
-          # Use redocly to generate a detailed diff
-          npx @redocly/openapi-cli diff main-spec.json current-spec.json --format=markdown >> api-diff.md 2>&1 || true
+          # Use redocly to generate a detailed diff (without --format=markdown which is not supported)
+          npx @redocly/openapi-cli diff main-spec.json current-spec.json >> api-diff.md 2>&1 || true
           
           # If the diff is empty, note that
           if [ ! -s api-diff.md ] || grep -q "No differences" api-diff.md; then

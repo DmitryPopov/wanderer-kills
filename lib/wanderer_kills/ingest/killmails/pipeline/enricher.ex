@@ -44,8 +44,10 @@ defmodule WandererKills.Ingest.Killmails.Pipeline.Enricher do
     with {:ok, killmail} <- enrich_victim(killmail),
          {:ok, killmail} <- enrich_attackers(killmail),
          {:ok, killmail} <- enrich_ship(killmail),
+         {:ok, killmail} <- enrich_system(killmail),
          {:ok, killmail} <- flatten_enriched_data(killmail),
-         {:ok, killmail} <- Transformations.enrich_with_ship_names(killmail) do
+         {:ok, killmail} <- Transformations.enrich_with_ship_names(killmail),
+         {:ok, killmail} <- Transformations.enrich_with_system_name(killmail) do
       {:ok, killmail}
     else
       error ->
@@ -161,6 +163,19 @@ defmodule WandererKills.Ingest.Killmails.Pipeline.Enricher do
     {:ok, killmail}
   end
 
+  defp enrich_system(killmail) do
+    system_id = Map.get(killmail, "system_id")
+
+    system =
+      case get_system_info(system_id) do
+        {:ok, system_data} -> system_data
+        _ -> nil
+      end
+
+    killmail = Map.put(killmail, "system", system)
+    {:ok, killmail}
+  end
+
   defp get_character_info(id) when is_integer(id), do: EsiClient.get_character(id)
   defp get_character_info(_), do: {:ok, nil}
 
@@ -169,6 +184,9 @@ defmodule WandererKills.Ingest.Killmails.Pipeline.Enricher do
 
   defp get_alliance_info(id) when is_integer(id) and id > 0, do: EsiClient.get_alliance(id)
   defp get_alliance_info(_), do: {:ok, nil}
+
+  defp get_system_info(id) when is_integer(id), do: EsiClient.get_system(id)
+  defp get_system_info(_), do: {:ok, nil}
 
   defp get_alliance_info_safe(id) when is_integer(id) do
     case get_alliance_info(id) do
