@@ -15,6 +15,11 @@ defmodule WandererKills.WebSocket.Info do
     rate_limit: "per_connection"
   }
 
+  # Cache configuration for subscription count
+  @subscription_count_cache_key :websocket_subscription_count_cache
+  # 5 seconds
+  @subscription_count_cache_ttl 5_000
+
   @doc """
   Get WebSocket connection information for clients.
   """
@@ -88,9 +93,39 @@ defmodule WandererKills.WebSocket.Info do
   end
 
   defp get_active_subscription_count do
+    case get_cached_subscription_count() do
+      {:ok, count} ->
+        count
+
+      _miss_or_expired ->
+        count = fetch_fresh_subscription_count()
+        cache_subscription_count(count)
+        count
+    end
+  end
+
+  defp get_cached_subscription_count do
+    case Process.get(@subscription_count_cache_key) do
+      {count, timestamp} when is_integer(timestamp) and is_integer(count) ->
+        if System.monotonic_time(:millisecond) - timestamp < @subscription_count_cache_ttl do
+          {:ok, count}
+        else
+          :expired
+        end
+
+      _ ->
+        :miss
+    end
+  end
+
+  defp fetch_fresh_subscription_count do
     SubscriptionManager.list_subscriptions() |> length()
   rescue
     _ -> 0
+  end
+
+  defp cache_subscription_count(count) do
+    Process.put(@subscription_count_cache_key, {count, System.monotonic_time(:millisecond)})
   end
 
   defp get_uptime_seconds do

@@ -122,6 +122,7 @@ defmodule WandererKills.Ingest.RedisQ do
       errors: 0,
       no_kills_count: 0,
       last_reset: DateTime.utc_now(),
+      last_kill_received_at: nil,
       systems_active: MapSet.new(),
       # Cumulative stats that don't reset
       total_kills_received: 0,
@@ -175,6 +176,7 @@ defmodule WandererKills.Ingest.RedisQ do
         no_kills_count: 0,
         last_reset: DateTime.utc_now(),
         systems_active: MapSet.new()
+        # Preserve last_kill_received_at - it should persist across resets
     }
 
     schedule_summary_log()
@@ -209,7 +211,8 @@ defmodule WandererKills.Ingest.RedisQ do
         state.stats.total_kills_received + state.stats.total_kills_older +
           state.stats.total_kills_skipped + state.stats.total_legacy_kills +
           state.stats.total_no_kills_count + state.stats.total_errors,
-      last_reset: state.stats.last_reset
+      last_reset: state.stats.last_reset,
+      last_kill_received_at: state.stats.last_kill_received_at
     }
 
     {:reply, {:ok, stats}, state}
@@ -237,7 +240,8 @@ defmodule WandererKills.Ingest.RedisQ do
     %{
       stats
       | kills_received: stats.kills_received + 1,
-        total_kills_received: stats.total_kills_received + 1
+        total_kills_received: stats.total_kills_received + 1,
+        last_kill_received_at: System.system_time(:second)
     }
   end
 
@@ -245,7 +249,8 @@ defmodule WandererKills.Ingest.RedisQ do
     %{
       stats
       | legacy_kills: stats.legacy_kills + 1,
-        total_legacy_kills: stats.total_legacy_kills + 1
+        total_legacy_kills: stats.total_legacy_kills + 1,
+        last_kill_received_at: System.system_time(:second)
     }
   end
 

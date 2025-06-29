@@ -1,6 +1,8 @@
 defmodule WandererKills.Subs.Subscriptions.BaseIndexTest do
   use ExUnit.Case, async: false
 
+  require Logger
+
   alias WandererKills.Subs.Subscriptions.BaseIndex
 
   # Create a test implementation of BaseIndex
@@ -46,14 +48,34 @@ defmodule WandererKills.Subs.Subscriptions.BaseIndexTest do
       TestEntityIndex.clear()
     end
   rescue
-    _ ->
-      # If clear fails, just ensure it's running for next test
-      # Don't try to clear again to avoid infinite loop
-      ensure_test_index_running()
+    # Catch specific expected errors and re-raise unexpected ones
+    error ->
+      case error do
+        %ArgumentError{} ->
+          # Invalid arguments or state
+          ensure_test_index_running()
+
+        _ ->
+          # Log and re-raise any unexpected errors
+          Logger.error("Unexpected error in test clear: #{inspect(error)}")
+          reraise error, __STACKTRACE__
+      end
   catch
-    :exit, _ ->
-      # Handle GenServer call timeouts/exits
+    :exit, {:noproc, _} ->
+      # GenServer process doesn't exist
       ensure_test_index_running()
+
+    :exit, {:timeout, _} ->
+      # GenServer call timeout
+      ensure_test_index_running()
+
+    kind, reason ->
+      # Log and re-raise any other unexpected errors
+      Logger.error("Unexpected catch in test clear: #{inspect({kind, reason})}")
+
+      reraise RuntimeError,
+              "Unexpected error in test clear: #{inspect({kind, reason})}",
+              __STACKTRACE__
   end
 
   describe "BaseIndex behaviour compliance" do

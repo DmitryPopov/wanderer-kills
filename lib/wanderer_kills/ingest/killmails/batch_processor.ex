@@ -324,8 +324,22 @@ defmodule WandererKills.Ingest.Killmails.BatchProcessor do
   defp extract_characters_from_killmail_cached(%Killmail{} = killmail) do
     MapSet.new(CharacterCache.extract_characters_cached(killmail))
   rescue
-    ArgumentError ->
-      # Cache not available, fall back to direct extraction
+    error ->
+      # Cache error (ArgumentError, ETS errors, etc.), fall back to direct extraction
+      Logger.debug("Character cache extraction failed, using fallback",
+        error: inspect(error),
+        killmail_id: killmail.killmail_id
+      )
+
+      MapSet.new(CharacterMatcher.extract_character_ids(killmail))
+  catch
+    :exit, reason ->
+      # Handle ETS table crashes or process exits
+      Logger.debug("Character cache process error, using fallback",
+        reason: inspect(reason),
+        killmail_id: killmail.killmail_id
+      )
+
       MapSet.new(CharacterMatcher.extract_character_ids(killmail))
   end
 

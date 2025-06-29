@@ -162,7 +162,6 @@ defmodule WandererKills.Core.Observability.Monitoring do
   @spec increment_stored() :: :ok
   def increment_stored do
     GenServer.cast(__MODULE__, {:increment, :stored})
-    Metrics.increment_stored()
   end
 
   @doc """
@@ -172,7 +171,6 @@ defmodule WandererKills.Core.Observability.Monitoring do
   @spec increment_skipped() :: :ok
   def increment_skipped do
     GenServer.cast(__MODULE__, {:increment, :skipped})
-    Metrics.increment_skipped()
   end
 
   @doc """
@@ -182,7 +180,6 @@ defmodule WandererKills.Core.Observability.Monitoring do
   @spec increment_failed() :: :ok
   def increment_failed do
     GenServer.cast(__MODULE__, {:increment, :failed})
-    Metrics.increment_failed()
   end
 
   @doc """
@@ -359,6 +356,13 @@ defmodule WandererKills.Core.Observability.Monitoring do
       current_stats
       |> Map.update!(key, &(&1 + 1))
       |> Map.update!(:total_processed, &(&1 + 1))
+
+    # Update unified metrics after successfully updating internal state
+    case key do
+      :stored -> Metrics.increment_stored()
+      :skipped -> Metrics.increment_skipped()
+      :failed -> Metrics.increment_failed()
+    end
 
     Logger.debug("[Monitoring] Updated parser_stats: #{inspect(new_stats)}")
     new_state = %{state | parser_stats: new_stats}

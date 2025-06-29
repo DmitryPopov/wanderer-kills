@@ -136,7 +136,7 @@ defmodule WandererKills.Test.SharedContexts do
   def with_kill_store(_context \\ %{}) do
     # Ensure tables exist before clearing
     KillmailStore.init_tables!()
-    KillmailStore.clear()
+    :ok = KillmailStore.clear()
     %{}
   end
 

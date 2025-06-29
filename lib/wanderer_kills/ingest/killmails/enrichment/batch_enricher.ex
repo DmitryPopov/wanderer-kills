@@ -47,46 +47,34 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
   end
 
   defp safely_fetch_entities_batch(entity_ids) do
-    {:ok, fetch_entities_batch(entity_ids)}
-  rescue
-    error ->
-      Logger.error("Failed to fetch entities batch",
-        error: Exception.format(:error, error, __STACKTRACE__),
-        entity_ids: entity_ids
-      )
-
-      {:error,
-       %{type: :enrichment_error, reason: Exception.format(:error, error, __STACKTRACE__)}}
-  catch
-    kind, reason ->
-      Logger.error("Failed to fetch entities batch",
-        error: Exception.format(kind, reason, __STACKTRACE__),
-        entity_ids: entity_ids
-      )
-
-      {:error, %{type: :enrichment_error, reason: Exception.format(kind, reason, __STACKTRACE__)}}
+    safe_enrichment_operation(
+      "Failed to fetch entities batch",
+      %{entity_ids: entity_ids},
+      fn -> fetch_entities_batch(entity_ids) end
+    )
   end
 
   defp safely_apply_enrichment(killmails, entity_cache) do
-    enriched = Enum.map(killmails, &enrich_killmail_with_cache(&1, entity_cache))
-    {:ok, enriched}
+    safe_enrichment_operation(
+      "Failed to apply enrichment",
+      %{killmail_count: length(killmails)},
+      fn -> Enum.map(killmails, &enrich_killmail_with_cache(&1, entity_cache)) end
+    )
+  end
+
+  # Common error handling for enrichment operations
+  defp safe_enrichment_operation(error_message, metadata, operation) do
+    {:ok, operation.()}
   rescue
     error ->
-      Logger.error("Failed to apply enrichment",
-        error: Exception.format(:error, error, __STACKTRACE__),
-        killmail_count: length(killmails)
-      )
-
-      {:error,
-       %{type: :enrichment_error, reason: Exception.format(:error, error, __STACKTRACE__)}}
+      formatted_error = Exception.format(:error, error, __STACKTRACE__)
+      Logger.error(error_message, Map.put(metadata, :error, formatted_error))
+      {:error, %{type: :enrichment_error, reason: formatted_error}}
   catch
     kind, reason ->
-      Logger.error("Failed to apply enrichment",
-        error: Exception.format(kind, reason, __STACKTRACE__),
-        killmail_count: length(killmails)
-      )
-
-      {:error, %{type: :enrichment_error, reason: Exception.format(kind, reason, __STACKTRACE__)}}
+      formatted_error = Exception.format(kind, reason, __STACKTRACE__)
+      Logger.error(error_message, Map.put(metadata, :error, formatted_error))
+      {:error, %{type: :enrichment_error, reason: formatted_error}}
   end
 
   @doc """

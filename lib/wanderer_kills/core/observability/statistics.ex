@@ -322,7 +322,9 @@ defmodule WandererKills.Core.Observability.Statistics do
 
     {:ok, aggregated}
   rescue
-    error -> {:error, error}
+    error ->
+      Logger.warning("Failed to aggregate cache statistics", error: inspect(error))
+      {:error, error}
   end
 
   @doc """

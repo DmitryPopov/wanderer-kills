@@ -9,6 +9,11 @@ defmodule WandererKills.Core.Observability.Status do
   alias WandererKills.Core.Observability.UnifiedStatus
   alias WandererKills.Subs.SubscriptionManager
 
+  # Cache configuration for subscription count
+  @subscription_count_cache_key :status_subscription_count_cache
+  # 5 seconds
+  @subscription_count_cache_ttl 5_000
+
   @doc """
   Get comprehensive service status information.
   """
@@ -103,13 +108,43 @@ defmodule WandererKills.Core.Observability.Status do
   defp get_time_from_killmail(_), do: nil
 
   @doc """
-  Get active subscription count.
+  Get active subscription count with caching.
   """
   @spec get_active_subscription_count() :: non_neg_integer()
   def get_active_subscription_count do
+    case get_cached_subscription_count() do
+      {:ok, count} ->
+        count
+
+      _miss_or_expired ->
+        count = fetch_fresh_subscription_count()
+        cache_subscription_count(count)
+        count
+    end
+  end
+
+  defp get_cached_subscription_count do
+    case Process.get(@subscription_count_cache_key) do
+      {count, timestamp} when is_integer(timestamp) and is_integer(count) ->
+        if System.monotonic_time(:millisecond) - timestamp < @subscription_count_cache_ttl do
+          {:ok, count}
+        else
+          :expired
+        end
+
+      _ ->
+        :miss
+    end
+  end
+
+  defp fetch_fresh_subscription_count do
     SubscriptionManager.list_subscriptions() |> length()
   rescue
     _ -> 0
+  end
+
+  defp cache_subscription_count(count) do
+    Process.put(@subscription_count_cache_key, {count, System.monotonic_time(:millisecond)})
   end
 
   # Private functions

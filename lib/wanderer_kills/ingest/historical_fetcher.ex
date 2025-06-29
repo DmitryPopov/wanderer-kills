@@ -485,10 +485,16 @@ defmodule WandererKills.Ingest.HistoricalFetcher do
       :ok ->
         handle_page_processing(request, page_kills, buffer_pid)
 
-      {:error, %Error{type: :rate_limit}} ->
-        # Wait and retry
-        Logger.warning("Rate limited, waiting 60 seconds", system_id: system_id)
-        Process.sleep(60_000)
+      {:error, %Error{type: :rate_limit, details: details}} ->
+        # Use retry_after_ms from rate limiter if available, otherwise fallback to 60s
+        retry_after_ms = get_in(details, [:retry_after_ms]) || 60_000
+
+        Logger.warning("Rate limited, waiting #{retry_after_ms} ms",
+          system_id: system_id,
+          retry_after_ms: retry_after_ms
+        )
+
+        Process.sleep(retry_after_ms)
         :retry
 
       {:error, error} ->

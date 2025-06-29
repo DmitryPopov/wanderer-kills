@@ -65,6 +65,10 @@ defmodule WandererKills.Core.Observability.Metrics do
           histograms: map()
         }
 
+  # Configuration
+  @metric_atoms_table :metric_atoms_table
+  @max_metric_atoms 10_000
+
   # ============================================================================
   # Client API
   # ============================================================================
@@ -320,15 +324,87 @@ defmodule WandererKills.Core.Observability.Metrics do
   # Unknown metric combination
   defp lookup_known_metric(_, _, _), do: nil
 
-  # Safe atom creation - only use for known metric patterns
+  # Safe atom creation with ETS-based allowlist
   defp safe_atom(string) when is_binary(string) do
-    String.to_existing_atom(string)
-  rescue
-    ArgumentError ->
-      # If atom doesn't exist, create it but log for monitoring
-      Logger.debug("Creating new metric atom", atom_string: string)
-      # credo:disable-for-next-line
-      String.to_atom(string)
+    case :ets.lookup(@metric_atoms_table, string) do
+      [{^string, atom}] ->
+        # Atom already exists and is allowed
+        atom
+
+      [] ->
+        # Check if atom already exists in VM
+        try do
+          existing_atom = String.to_existing_atom(string)
+          # Cache it for next time
+          :ets.insert(@metric_atoms_table, {string, existing_atom})
+          existing_atom
+        rescue
+          ArgumentError ->
+            # Atom doesn't exist, check if we can create it
+            create_metric_atom_if_allowed(string)
+        end
+    end
+  end
+
+  defp create_metric_atom_if_allowed(string) do
+    # Check if we've hit the limit
+    case :ets.info(@metric_atoms_table, :size) do
+      size when size >= @max_metric_atoms ->
+        Logger.warning("Metric atom limit reached, rejecting new atom",
+          atom_string: string,
+          limit: @max_metric_atoms
+        )
+
+        # Return a generic error atom instead of creating new ones
+        :metric_atom_limit_exceeded
+
+      _size ->
+        # Validate the metric name format
+        if valid_metric_name?(string) do
+          # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+          atom = String.to_atom(string)
+          :ets.insert(@metric_atoms_table, {string, atom})
+          Logger.debug("Created new metric atom", atom_string: string)
+          atom
+        else
+          Logger.warning("Invalid metric name format", atom_string: string)
+          :invalid_metric_name
+        end
+    end
+  end
+
+  # Validate metric name format to prevent arbitrary atom creation
+  defp valid_metric_name?(string) do
+    # Only allow alphanumeric, dots, underscores, and limited length
+    String.match?(string, ~r/^[a-zA-Z0-9._]{1,100}$/) and
+      not String.starts_with?(string, ".") and
+      not String.ends_with?(string, ".")
+  end
+
+  # Pre-populate known metric patterns
+  defp populate_known_metrics do
+    known_patterns = [
+      # HTTP metrics
+      ~w(http.zkb.requests http.zkb.GET http.zkb.POST http.zkb.status.2xx http.zkb.status.4xx http.zkb.status.5xx http.zkb.duration_ms),
+      ~w(http.esi.requests http.esi.GET http.esi.POST http.esi.status.2xx http.esi.status.4xx http.esi.status.5xx http.esi.duration_ms),
+      # Cache metrics
+      ~w(cache.wanderer_cache.hit cache.wanderer_cache.miss cache.wanderer_cache.put cache.wanderer_cache.eviction cache.wanderer_cache.total),
+      ~w(cache.character_cache.hit cache.character_cache.miss cache.character_cache.put cache.character_cache.eviction cache.character_cache.total),
+      # Killmail metrics
+      ~w(killmail.stored killmail.skipped killmail.failed killmail.enriched),
+      # System metrics
+      ~w(system.memory system.processes system.ports system.atom_count system.ets_count),
+      # WebSocket metrics
+      ~w(websocket.connections websocket.subscriptions websocket.messages_sent),
+      # Parser metrics
+      ~w(killmail_stored killmail_skipped killmail_failed)
+    ]
+
+    for patterns <- known_patterns, pattern <- patterns do
+      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+      atom = String.to_atom(pattern)
+      :ets.insert(@metric_atoms_table, {pattern, atom})
+    end
   end
 
   # ============================================================================
@@ -369,6 +445,17 @@ defmodule WandererKills.Core.Observability.Metrics do
   @impl true
   def init(_opts) do
     Logger.info("[Metrics] Starting unified metrics collection")
+
+    # Create ETS table for metric atoms if it doesn't exist
+    case :ets.whereis(@metric_atoms_table) do
+      :undefined ->
+        :ets.new(@metric_atoms_table, [:set, :public, :named_table, read_concurrency: true])
+        # Pre-populate with known metric patterns
+        populate_known_metrics()
+
+      _ ->
+        :ok
+    end
 
     state = %{
       start_time: DateTime.utc_now(),

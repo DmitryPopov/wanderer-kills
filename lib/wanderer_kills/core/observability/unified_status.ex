@@ -160,7 +160,7 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
     redisq_stats = ets_get(EtsOwner.wanderer_kills_stats_table(), :redisq_stats, %{})
     parser_stats = ets_get(EtsOwner.wanderer_kills_stats_table(), :parser_stats, %{})
 
-    redisq_received = Map.get(redisq_stats, :kills_received, 0)
+    redisq_received = Map.get(redisq_stats, :kills_processed, 0)
     redisq_errors = Map.get(redisq_stats, :errors, 0)
     parser_stored = Map.get(parser_stats, :stored, 0)
     parser_failed = Map.get(parser_stats, :failed, 0)
@@ -467,9 +467,26 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
         try do
           apply(mod, fun, args)
         rescue
-          _ -> default
+          error ->
+            Logger.warning("Failed to apply function",
+              module: mod,
+              function: fun,
+              args: length(args),
+              error: inspect(error)
+            )
+
+            default
         catch
-          _, _ -> default
+          type, error ->
+            Logger.warning("Caught exception in apply",
+              module: mod,
+              function: fun,
+              args: length(args),
+              type: type,
+              error: inspect(error)
+            )
+
+            default
         end
     end
   end
@@ -488,7 +505,14 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
       _ -> 0
     end
   rescue
-    _ -> 0
+    error ->
+      Logger.debug("Failed to get ETS info",
+        table: tab,
+        field: field,
+        error: inspect(error)
+      )
+
+      0
   end
 
   defp hit_rate(part, whole) do
