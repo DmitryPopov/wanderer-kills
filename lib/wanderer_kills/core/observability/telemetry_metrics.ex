@@ -112,6 +112,10 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
     :ets.insert(@table, {:kills_delivered, 0})
 
     # SSE metrics
+    :ets.insert(@table, {:sse_connections_started, 0})
+    :ets.insert(@table, {:sse_connections_active, 0})
+    :ets.insert(@table, {:sse_events_sent, 0})
+
     :ets.insert(
       @table,
       {:sse,
@@ -195,6 +199,9 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
         _config
       ) do
     event_type = Map.get(metadata, :event_type, "unknown")
+
+    # Track overall SSE events sent
+    increment_counter(:sse_events_sent)
 
     case :ets.lookup(@table, :sse) do
       [{:sse, current_metrics}] ->

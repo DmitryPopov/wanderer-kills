@@ -2,6 +2,8 @@ import Config
 
 # Configure the application for testing with nested structure
 config :wanderer_kills,
+  # Set environment for runtime checks
+  env: :test,
   # Use ETS adapter for tests instead of Cachex
   cache_adapter: WandererKills.Core.Cache.ETSAdapter,
   # Run in headless mode by default for core tests

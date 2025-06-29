@@ -10,6 +10,26 @@ defmodule WandererKills.SSE.Broadcaster do
 
   @pubsub_name WandererKills.PubSub
 
+  # Event type constants
+  @event_type_killmail "killmail"
+  @event_type_test "test"
+
+  # Private helper to check if dev environment
+  defp dev_env? do
+    Application.get_env(:wanderer_kills, :env) == :dev
+  end
+
+  # Private helper to emit telemetry events
+  defp emit_telemetry(topic, event_type, prefix \\ "broadcast") do
+    connection_id =
+      "#{prefix}_#{String.replace(topic, ":", "_")}_#{System.system_time(:millisecond)}"
+
+    :telemetry.execute([:wanderer_kills, :sse, :event, :sent], %{count: 1}, %{
+      connection_id: connection_id,
+      event_type: event_type
+    })
+  end
+
   @doc """
   Broadcasts a killmail to SSE subscribers with proper formatting.
   """
@@ -21,11 +41,24 @@ defmodule WandererKills.SSE.Broadcaster do
         # SSE library expects {pubsub_name, data} format
         message = {@pubsub_name, json_data}
 
-        Logger.debug("Broadcasting SSE message to topic: #{topic}",
-          message_format: inspect(message)
-        )
+        if dev_env?() do
+          Logger.info(
+            "[SSE] Broadcasting killmail to SSE subscribers - Topic: #{topic}, Killmail: #{killmail_map["killmail_id"]}, System: #{killmail_map["system_id"]}, Victim Ship: #{killmail_map["victim"]["ship_name"] || "Unknown"}"
+          )
+        end
 
-        Phoenix.PubSub.broadcast(@pubsub_name, topic, message)
+        result = Phoenix.PubSub.broadcast(@pubsub_name, topic, message)
+
+        # Track SSE event sent
+        emit_telemetry(topic, @event_type_killmail)
+
+        if dev_env?() do
+          Logger.info(
+            "[SSE] Killmail broadcast completed - Topic: #{topic}, Killmail: #{killmail_map["killmail_id"]}, Result: #{inspect(result)}"
+          )
+        end
+
+        result
 
       {:error, reason} ->
         Logger.error("Failed to encode killmail for SSE broadcast",
@@ -42,6 +75,14 @@ defmodule WandererKills.SSE.Broadcaster do
   """
   @spec broadcast_killmails(String.t(), [map()]) :: :ok | {:error, [term()]}
   def broadcast_killmails(topic, killmails) when is_list(killmails) do
+    if dev_env?() do
+      killmail_ids = Enum.map(killmails, & &1["killmail_id"])
+
+      Logger.info(
+        "[SSE] Broadcasting batch of killmails to SSE subscribers - Topic: #{topic}, Count: #{length(killmails)}, IDs: #{inspect(killmail_ids)}"
+      )
+    end
+
     results =
       Enum.map(killmails, fn killmail ->
         case broadcast_killmail(topic, killmail) do
@@ -76,9 +117,16 @@ defmodule WandererKills.SSE.Broadcaster do
     case Jason.encode(test_data) do
       {:ok, json_data} ->
         message = {@pubsub_name, json_data}
-        Phoenix.PubSub.broadcast(@pubsub_name, topic, message)
-        Logger.info("Sent SSE test message to topic: #{topic}")
-        :ok
+        result = Phoenix.PubSub.broadcast(@pubsub_name, topic, message)
+
+        # Track SSE test event sent
+        emit_telemetry(topic, @event_type_test, "test_broadcast")
+
+        if dev_env?() do
+          Logger.info("[SSE] Sent test message to SSE subscribers - Topic: #{topic}")
+        end
+
+        result
 
       {:error, reason} ->
         Logger.error("Failed to encode test message", reason: reason)

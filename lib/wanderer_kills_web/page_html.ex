@@ -53,11 +53,11 @@ defmodule WandererKillsWeb.PageHTML do
       </div>
       <div class="stat-card">
         <h3>Total Killmails</h3>
-        <div class="value">#{format_number(Utils.safe_get(status, [:storage, :total_killmails]))}</div>
+        <div class="value">#{format_number(Utils.safe_get(status, [:storage, :killmails_count]))}</div>
       </div>
       <div class="stat-card">
         <h3>Active Systems</h3>
-        <div class="value">#{format_number(Utils.safe_get(status, [:storage, :unique_systems]))}</div>
+        <div class="value">#{format_number(Utils.safe_get(status, [:storage, :systems_count]))}</div>
       </div>
       <div class="stat-card">
         <h3>WebSocket Connections</h3>
@@ -133,7 +133,7 @@ defmodule WandererKillsWeb.PageHTML do
         </div>
         <div class="metric-row">
           <span class="metric-label">Operations/min</span>
-          <span class="metric-value">#{format_number(Utils.safe_get(status, [:cache, :total_operations]))}</span>
+          <span class="metric-value">#{format_number(Utils.safe_get(status, [:cache, :operations_per_minute]))}</span>
         </div>
       </div>
     </div>
@@ -142,10 +142,28 @@ defmodule WandererKillsWeb.PageHTML do
 
   defp system_performance_card(status) do
     # Calculate system performance metrics from available data
-    total_api_requests = Utils.safe_get(status, [:api, :total_requests], 0)
-    api_requests_per_min = Utils.safe_get(status, [:api, :requests_per_minute], 0)
-    api_error_count = Utils.safe_get(status, [:api, :error_count], 0)
-    avg_duration = Utils.safe_get(status, [:api, :avg_duration_ms], 0)
+    zkb_stats = Utils.safe_get(status, [:api, :zkillboard], %{})
+    esi_stats = Utils.safe_get(status, [:api, :esi], %{})
+
+    # Combine stats from both APIs
+    total_api_requests =
+      Utils.safe_get(zkb_stats, [:total_requests], 0) +
+        Utils.safe_get(esi_stats, [:total_requests], 0)
+
+    api_requests_per_min =
+      Utils.safe_get(zkb_stats, [:requests_per_minute], 0) +
+        Utils.safe_get(esi_stats, [:requests_per_minute], 0)
+
+    api_error_count =
+      Utils.safe_get(zkb_stats, [:error_count], 0) + Utils.safe_get(esi_stats, [:error_count], 0)
+
+    # Use ESI average duration as it's typically higher
+    avg_duration =
+      Utils.safe_get(
+        esi_stats,
+        [:avg_duration_ms],
+        Utils.safe_get(zkb_stats, [:avg_duration_ms], 0)
+      )
 
     # Calculate error rate
     error_rate =
@@ -216,7 +234,7 @@ defmodule WandererKillsWeb.PageHTML do
         </div>
         <div class="metric-row">
           <span class="metric-label">SSE Stream</span>
-          <span class="metric-value">#{format_number(Utils.safe_get(status, [:sse, :messages_sent]))}</span>
+          <span class="metric-value">#{format_number(Utils.safe_get(status, [:sse, :events_sent_total]))}</span>
         </div>
       </div>
     </div>

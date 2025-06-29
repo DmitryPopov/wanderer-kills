@@ -21,6 +21,10 @@ defmodule WandererKills.Core.Storage.KillmailStore do
   config :wanderer_kills, :storage,
     enable_event_streaming: true  # Default: true
   ```
+
+  ## Environment Variables
+
+  - `KILLMAIL_RETENTION_DAYS` - Number of days to retain killmail data (default: 2)
   """
 
   @behaviour WandererKills.Core.Storage.Behaviour
@@ -619,11 +623,11 @@ defmodule WandererKills.Core.Storage.KillmailStore do
   Performs cleanup of old data based on configured TTLs.
 
   TTL Configuration:
-  - killmails: 2 days
-  - system_killmails: 2 days
+  - killmails: Configurable via KILLMAIL_RETENTION_DAYS env var (default: 2 days)
+  - system_killmails: Same as killmails retention
   - system_kill_counts: Cleaned when system has no killmails
   - system_fetch_timestamps: 12 hours
-  - killmail_events: 2 days
+  - killmail_events: Same as killmails retention
   - client_offsets: 1 day
   """
   def cleanup_old_data do
@@ -632,14 +636,23 @@ defmodule WandererKills.Core.Storage.KillmailStore do
 
       now = DateTime.utc_now()
 
-      # Define TTLs in seconds
-      # 2 days (reduced from 7 days)
-      killmail_ttl = 2 * 24 * 60 * 60
-      # 12 hours (reduced from 1 day)
+      # Define TTLs in seconds - configurable via environment variables
+      killmail_retention_days =
+        case Integer.parse(System.get_env("KILLMAIL_RETENTION_DAYS", "2")) do
+          {value, ""} when value > 0 -> value
+          _ -> 2
+        end
+
+      killmail_ttl = killmail_retention_days * 24 * 60 * 60
+
+      Logger.info(
+        "[KillmailStore] Using retention settings: #{killmail_retention_days} days for killmails"
+      )
+
+      # Other TTLs remain hardcoded for now (12 hours)
       system_count_ttl = 12 * 60 * 60
-      # 12 hours (reduced from 1 day)
       timestamp_ttl = 12 * 60 * 60
-      # 1 day (reduced from 3 days)
+      # 1 day
       client_offset_ttl = 24 * 60 * 60
 
       # Track cleanup stats

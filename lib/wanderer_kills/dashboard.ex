@@ -67,7 +67,7 @@ defmodule WandererKills.Dashboard do
       websocket_stats = get_websocket_stats()
 
       # Get uptime and version safely
-      uptime = format_uptime(Utils.safe_get(status, [:uptime_seconds], 0))
+      uptime = format_uptime(Utils.safe_get(status, [:system, :uptime_seconds], 0))
 
       version =
         case Application.spec(:wanderer_kills, :vsn) do

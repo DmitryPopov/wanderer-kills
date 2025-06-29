@@ -320,7 +320,8 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
       scheduler_usage: scheduler_usage(),
       reductions_per_second: reductions_rate(),
       gc_runs: gc_stats(),
-      uptime_hours: uptime_hours()
+      uptime_hours: uptime_hours(),
+      uptime_seconds: uptime_seconds()
     }
   end
 
@@ -424,9 +425,6 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
   ### SSE
 
   defp collect_sse_metrics do
-    # SSE is now managed by sse_phoenix_pubsub library
-    sse_stats = %{}
-
     # Get telemetry metrics for SSE event tracking
     telemetry_metrics =
       safe_apply(WandererKills.Core.Observability.TelemetryMetrics, :get_metrics, [], %{})
@@ -434,26 +432,25 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
     # Extract SSE-specific telemetry metrics
     sse_telemetry = Map.get(telemetry_metrics, :sse, %{})
 
+    # Get connection and event counts from telemetry
+    connections_started = Map.get(telemetry_metrics, :sse_connections_started, 0)
+    events_sent_total = Map.get(telemetry_metrics, :sse_events_sent, 0)
+
     %{
       # Connection metrics
-      connections_active: Map.get(sse_stats, :active_connections, 0),
-      connections_total: Map.get(sse_stats, :connections_opened, 0),
-      connections_closed: Map.get(sse_stats, :connections_closed, 0),
+      connections_total: connections_started,
       # Event metrics
-      events_sent_total: Map.get(sse_stats, :total_events_sent, 0),
+      events_sent_total: events_sent_total,
       events_killmails: Map.get(sse_telemetry, :killmail_events, 0),
       events_heartbeats: Map.get(sse_telemetry, :heartbeat_events, 0),
       events_errors: Map.get(sse_telemetry, :error_events, 0),
-      # Connection distribution
-      connections_by_ip: count_unique_ips(Map.get(sse_stats, :connections_by_ip, %{})),
-      # Calculated metrics (SSE now managed by library)
-      avg_connection_duration: 0.0,
-      events_per_connection: 0.0
+      # Calculated metrics
+      events_per_connection:
+        if(connections_started > 0,
+          do: Float.round(events_sent_total / connections_started, 1),
+          else: 0.0
+        )
     }
-  end
-
-  defp count_unique_ips(ip_map) do
-    Map.keys(ip_map) |> length()
   end
 
   # ────────────────────────────  Utilities  ─────────────────────────────
@@ -533,9 +530,9 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
 
     [SSE] Server-Sent Events Streaming
     ─────────────────────────────────────────────────────────────────────
-      Connections   #{format_metric(m.sse.connections_active, "active", 8)} / #{format_metric(m.sse.connections_total, "total")} │ #{format_metric(m.sse.connections_by_ip, "unique IPs")}
+      Connections   #{format_metric(m.sse.connections_total, "total", 8)}
       Events Sent   #{format_metric(format_number(m.sse.events_sent_total), "total", 8)} │ #{format_metric(m.sse.events_killmails, "killmails", 12)} │ #{format_metric(m.sse.events_heartbeats, "heartbeats")}
-      Performance   #{format_metric(m.sse.avg_connection_duration, "s avg conn", 12)} │ #{format_metric(m.sse.events_per_connection, "events/conn", 15)} │ #{format_metric(m.sse.events_errors, "errors")}
+      Performance   #{format_metric(m.sse.events_per_connection, "events/conn", 15)} │ #{format_metric(m.sse.events_errors, "errors")}
 
     [STORAGE] Storage & Cache
     ─────────────────────────────────────────────────────────────────────

@@ -859,10 +859,15 @@ defmodule WandererKills.Core.Observability.Telemetry do
   def handle_sse_event([:wanderer_kills, :sse, type | rest], measurements, metadata, _config) do
     case [type | rest] do
       [:connection, :start] ->
-        Logger.info("[SSE] Connection started",
-          connection_id: metadata.connection_id,
-          filters: metadata.filters,
-          ip: metadata.ip
+        topics_str =
+          case Map.get(metadata, :topics) do
+            nil -> "unknown"
+            topics when is_list(topics) -> Enum.join(topics, ", ")
+            _ -> "unknown"
+          end
+
+        Logger.info(
+          "[SSE] Connection started - ID: #{metadata.connection_id}, IP: #{metadata.ip}, Topics: #{topics_str}"
         )
 
       [:connection, :stop] ->

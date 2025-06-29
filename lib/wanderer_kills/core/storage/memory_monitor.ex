@@ -4,6 +4,11 @@ defmodule WandererKills.Core.Storage.MemoryMonitor do
 
   This GenServer periodically checks memory usage and can trigger emergency
   cleanup when memory exceeds configured thresholds.
+
+  ## Environment Variables
+
+  - `MEMORY_THRESHOLD_MB` - Memory threshold in MB for cleanup warning (default: 1000)
+  - `EMERGENCY_MEMORY_THRESHOLD_MB` - Emergency memory threshold in MB for forced cleanup (default: 1500)
   """
 
   use GenServer
@@ -45,9 +50,24 @@ defmodule WandererKills.Core.Storage.MemoryMonitor do
     # Get all configuration from storage config
     storage_config = Application.get_env(:wanderer_kills, :storage, [])
 
-    # Memory thresholds
-    memory_threshold_mb = Keyword.get(storage_config, :memory_threshold_mb, 1000)
-    emergency_threshold_mb = Keyword.get(storage_config, :emergency_threshold_mb, 1500)
+    # Memory thresholds - configurable via environment variables
+    default_memory_threshold =
+      case Integer.parse(System.get_env("MEMORY_THRESHOLD_MB", "1000")) do
+        {value, ""} when value > 0 -> value
+        _ -> 1000
+      end
+
+    default_emergency_threshold =
+      case Integer.parse(System.get_env("EMERGENCY_MEMORY_THRESHOLD_MB", "1500")) do
+        {value, ""} when value > 0 -> value
+        _ -> 1500
+      end
+
+    memory_threshold_mb =
+      Keyword.get(storage_config, :memory_threshold_mb, default_memory_threshold)
+
+    emergency_threshold_mb =
+      Keyword.get(storage_config, :emergency_threshold_mb, default_emergency_threshold)
 
     # Check interval
     check_interval_ms =
@@ -64,7 +84,8 @@ defmodule WandererKills.Core.Storage.MemoryMonitor do
       emergency_threshold_mb: emergency_threshold_mb,
       check_interval_ms: check_interval_ms,
       emergency_killmail_threshold: emergency_killmail_threshold,
-      emergency_removal_percentage: emergency_removal_percentage
+      emergency_removal_percentage: emergency_removal_percentage,
+      effective_thresholds: "#{memory_threshold_mb}MB/#{emergency_threshold_mb}MB"
     )
 
     # Schedule first check

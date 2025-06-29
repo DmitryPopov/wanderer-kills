@@ -76,6 +76,46 @@ docker-compose up -d
 
 The service will be available at `http://localhost:4004`
 
+## Configuration
+
+### Environment Variables
+
+WandererKills can be configured using the following environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PORT` | HTTP port to listen on | `4004` |
+| `MIX_ENV` | Elixir environment (dev/test/prod) | `prod` |
+| `KILLMAIL_RETENTION_DAYS` | Number of days to retain killmail data | `2` |
+| `MEMORY_THRESHOLD_MB` | Memory usage threshold (MB) before warning | `1000` |
+| `EMERGENCY_MEMORY_THRESHOLD_MB` | Memory usage threshold (MB) for emergency cleanup | `1500` |
+
+#### Example Usage
+
+```bash
+# Docker
+docker run -p 4004:4004 \
+  -e KILLMAIL_RETENTION_DAYS=7 \
+  -e MEMORY_THRESHOLD_MB=2000 \
+  -e EMERGENCY_MEMORY_THRESHOLD_MB=3000 \
+  guarzo/wanderer-kills
+
+# Local development
+export KILLMAIL_RETENTION_DAYS=7
+export MEMORY_THRESHOLD_MB=2000
+mix phx.server
+```
+
+### Data Retention
+
+The `KILLMAIL_RETENTION_DAYS` variable controls how long killmail data is stored before automatic cleanup. Setting this to a higher value will use more memory but allow for longer historical data access.
+
+### Memory Management
+
+The memory threshold variables control when the system triggers cleanup operations:
+- `MEMORY_THRESHOLD_MB`: When exceeded, the system logs warnings about memory usage
+- `EMERGENCY_MEMORY_THRESHOLD_MB`: When exceeded, the system performs emergency cleanup of old data
+
 ## API Overview
 
 ### REST Endpoints

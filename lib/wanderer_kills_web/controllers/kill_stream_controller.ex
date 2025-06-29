@@ -67,12 +67,23 @@ defmodule WandererKillsWeb.KillStreamController do
   def stream(conn, params) do
     case FilterParser.parse(params) do
       {:ok, filters} ->
-        Logger.info("Starting SSE stream", filters: filters, remote_ip: get_remote_ip(conn))
-
+        remote_ip = get_remote_ip(conn)
         # Determine PubSub topics based on filters
         topics = determine_topics(filters)
 
-        Logger.info("SSE subscribing to topics", topics: topics, filters: filters)
+        Logger.info(
+          "Starting SSE stream - IP: #{remote_ip}, Topics: #{inspect(topics)}, Filters: #{format_filters(filters)}"
+        )
+
+        # Track SSE connection start
+        connection_id = generate_connection_id()
+
+        :telemetry.execute([:wanderer_kills, :sse, :connection, :start], %{count: 1}, %{
+          connection_id: connection_id,
+          ip: remote_ip,
+          filters: filters,
+          topics: topics
+        })
 
         # Stream events from PubSub topics using sse_phoenix_pubsub
         # This function hijacks the connection and never returns
@@ -151,6 +162,30 @@ defmodule WandererKillsWeb.KillStreamController do
       true ->
         # No specific filters, subscribe to all
         [PubSubTopics.all_systems_topic()]
+    end
+  end
+
+  defp generate_connection_id do
+    System.unique_integer([:positive]) |> Integer.to_string()
+  end
+
+  defp format_filters(%{
+         system_ids: system_ids,
+         character_ids: character_ids,
+         min_value: min_value
+       }) do
+    parts = []
+
+    parts = if system_ids != [], do: ["systems: #{inspect(system_ids)}" | parts], else: parts
+
+    parts =
+      if character_ids != [], do: ["characters: #{inspect(character_ids)}" | parts], else: parts
+
+    parts = if min_value, do: ["min_value: #{min_value}" | parts], else: parts
+
+    case parts do
+      [] -> "none"
+      _ -> Enum.join(parts, ", ")
     end
   end
 
