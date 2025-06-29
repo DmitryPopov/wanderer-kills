@@ -331,28 +331,13 @@ defmodule WandererKillsWeb.EnhancedKillStreamController do
   end
 
   defp get_active_sse_connections do
-    case :ets.whereis(:sse_connections) do
-      :undefined ->
-        # Create table if it doesn't exist
-        :ets.new(:sse_connections, [:set, :public, :named_table])
-        0
-
-      _tid ->
-        :ets.info(:sse_connections, :size) || 0
-    end
+    ensure_sse_connections_table()
+    :ets.info(:sse_connections, :size) || 0
   end
 
   defp track_connection_start do
     connection_id = make_ref()
-
-    case :ets.whereis(:sse_connections) do
-      :undefined ->
-        :ets.new(:sse_connections, [:set, :public, :named_table])
-
-      _tid ->
-        :ok
-    end
-
+    ensure_sse_connections_table()
     :ets.insert(:sse_connections, {connection_id, :active})
     connection_id
   end
@@ -413,4 +398,22 @@ defmodule WandererKillsWeb.EnhancedKillStreamController do
   end
 
   defp convert_nested_structs(value), do: value
+
+  # Safe ETS table creation helper that handles race conditions
+  defp ensure_sse_connections_table do
+    case :ets.whereis(:sse_connections) do
+      :undefined ->
+        try do
+          :ets.new(:sse_connections, [:set, :public, :named_table])
+        rescue
+          ArgumentError ->
+            # Table was created by another process between the check and creation
+            # This is expected in race conditions, so we can safely ignore it
+            :ok
+        end
+
+      _tid ->
+        :ok
+    end
+  end
 end
