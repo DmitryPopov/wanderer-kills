@@ -24,11 +24,13 @@ defmodule WandererKills.SSE.FilterParser do
   def parse(params) when is_map(params) do
     with {:ok, system_ids} <- parse_ids(params["system_ids"], "system_ids"),
          {:ok, character_ids} <- parse_ids(params["character_ids"], "character_ids"),
-         {:ok, min_value} <- parse_min_value(params["min_value"]) do
+         {:ok, min_value} <- parse_min_value(params["min_value"]),
+         {:ok, preload_days} <- parse_preload_days(params["preload_days"]) do
       filters = %{
         system_ids: system_ids,
         character_ids: character_ids,
-        min_value: min_value
+        min_value: min_value,
+        preload_days: preload_days
       }
 
       validate_filters(filters)
@@ -120,6 +122,46 @@ defmodule WandererKills.SSE.FilterParser do
      Error.validation_error(
        :invalid_format,
        "min_value must be a non-negative number"
+     )}
+  end
+
+  defp parse_preload_days(nil), do: {:ok, 0}
+  defp parse_preload_days(""), do: {:ok, 0}
+
+  defp parse_preload_days(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {days, ""} when days >= 0 and days <= 90 ->
+        {:ok, days}
+
+      {days, ""} when days > 90 ->
+        # Cap at 90 days
+        {:ok, 90}
+
+      {days, ""} when days < 0 ->
+        {:error,
+         Error.validation_error(
+           :invalid_format,
+           "preload_days must be non-negative"
+         )}
+
+      _ ->
+        {:error,
+         Error.validation_error(
+           :invalid_format,
+           "Invalid preload_days: '#{value}' is not a valid integer"
+         )}
+    end
+  end
+
+  defp parse_preload_days(value) when is_integer(value) and value >= 0 do
+    {:ok, min(value, 90)}
+  end
+
+  defp parse_preload_days(_) do
+    {:error,
+     Error.validation_error(
+       :invalid_format,
+       "preload_days must be a non-negative integer"
      )}
   end
 

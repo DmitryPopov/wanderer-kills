@@ -19,13 +19,15 @@ defmodule WandererKills.Subs.Preloader do
   alias WandererKills.Core.Cache
   alias WandererKills.Core.Systems.KillmailProcessor
   alias WandererKills.Domain.Killmail
-  alias WandererKills.Ingest.Killmails.ZkbClient
+  alias WandererKills.Ingest.Killmails.{ZkbClient, UnifiedProcessor}
   alias WandererKills.Ingest.{SmartRateLimiter, RequestCoalescer}
 
   @type system_id :: integer()
+  @type character_id :: integer()
   @type killmail :: Killmail.t()
   @type limit :: pos_integer()
   @type hours :: pos_integer()
+  @type days :: pos_integer()
 
   @doc """
   Preloads kills for a system with a specified limit.
@@ -77,6 +79,185 @@ defmodule WandererKills.Subs.Preloader do
     )
 
     result
+  end
+
+  @doc """
+  Preloads kills for characters with specified options.
+
+  This function:
+  1. Fetches killmails for each character from ZKillboard
+  2. Enriches the killmails through the pipeline
+  3. Returns killmails sorted by timestamp in batches
+
+  ## Parameters
+    - `character_ids` - List of EVE Online character IDs
+    - `opts` - Keyword list of options:
+      - `:days` - Number of days of history (default: 90, max: 90)
+      - `:batch_size` - Size of batches to return (default: 50)
+
+  ## Returns
+    - List of lists, where each inner list is a batch of enriched killmails
+  """
+  @spec preload_kills_for_characters([character_id()], keyword()) :: [[Killmail.t()]]
+  def preload_kills_for_characters(character_ids, opts \\ []) do
+    days = Keyword.get(opts, :days, 90) |> min(90) |> max(1)
+    batch_size = Keyword.get(opts, :batch_size, 50) |> max(1)
+
+    Logger.info("[Preloader] Starting character killmail preload",
+      character_ids: character_ids,
+      days: days,
+      batch_size: batch_size
+    )
+
+    # Fetch killmails for all characters in parallel
+    all_killmails =
+      character_ids
+      |> Task.async_stream(
+        fn char_id -> fetch_character_kills(char_id, days) end,
+        max_concurrency: 3,
+        timeout: 60_000
+      )
+      |> Enum.reduce([], fn
+        {:ok, kills}, acc ->
+          acc ++ kills
+
+        {:exit, reason}, acc ->
+          Logger.error("[Preloader] Task failed", reason: inspect(reason))
+          acc
+      end)
+      |> Enum.uniq_by(& &1.killmail_id)
+      |> Enum.sort_by(& &1.kill_time, {:desc, DateTime})
+
+    # Split into batches
+    batches = Enum.chunk_every(all_killmails, batch_size)
+
+    Logger.info("[Preloader] Character preload complete",
+      total_kills: length(all_killmails),
+      batch_count: length(batches)
+    )
+
+    batches
+  end
+
+  @doc """
+  Preloads kills for systems with specified options.
+
+  This function:
+  1. Fetches killmails for each system
+  2. Enriches the killmails through the pipeline
+  3. Returns killmails sorted by timestamp in batches
+
+  ## Parameters
+    - `system_ids` - List of EVE Online system IDs
+    - `opts` - Keyword list of options:
+      - `:days` - Number of days of history (default: 90, max: 90)
+      - `:batch_size` - Size of batches to return (default: 50)
+
+  ## Returns
+    - List of lists, where each inner list is a batch of enriched killmails
+  """
+  @spec preload_kills_for_systems([system_id()], keyword()) :: [[Killmail.t()]]
+  def preload_kills_for_systems(system_ids, opts \\ []) do
+    days = Keyword.get(opts, :days, 90) |> min(90) |> max(1)
+    batch_size = Keyword.get(opts, :batch_size, 50) |> max(1)
+    hours = days * 24
+
+    Logger.info("[Preloader] Starting system killmail preload",
+      system_ids: system_ids,
+      days: days,
+      batch_size: batch_size
+    )
+
+    # For systems, we can fetch more efficiently using the existing function
+    system_limit =
+      Application.get_env(:wanderer_kills, :preloader)[:system_historical_limit] || 1000
+
+    all_killmails =
+      system_ids
+      |> Enum.flat_map(fn system_id ->
+        # Use configurable limit for historical data
+        preload_kills_for_system(system_id, system_limit, hours)
+      end)
+      |> Enum.uniq_by(& &1.killmail_id)
+      |> Enum.sort_by(& &1.kill_time, {:desc, DateTime})
+
+    # Split into batches
+    batches = Enum.chunk_every(all_killmails, batch_size)
+
+    Logger.info("[Preloader] System preload complete",
+      total_kills: length(all_killmails),
+      batch_count: length(batches)
+    )
+
+    batches
+  end
+
+  defp fetch_character_kills(character_id, days) do
+    Logger.debug("[Preloader] Fetching kills for character",
+      character_id: character_id,
+      days: days
+    )
+
+    past_seconds = days * 24 * 60 * 60
+
+    case fetch_character_kills_smart(character_id, past_seconds) do
+      {:ok, raw_kills} when is_list(raw_kills) ->
+        Logger.debug("[Preloader] Processing character kills",
+          character_id: character_id,
+          kill_count: length(raw_kills)
+        )
+
+        # Process through enrichment pipeline
+        enriched_kills =
+          raw_kills
+          |> Enum.map(&enrich_single_killmail/1)
+          |> Enum.filter(&match?({:ok, _}, &1))
+          |> Enum.map(fn {:ok, kill} -> kill end)
+
+        Logger.debug("[Preloader] Character kills enriched",
+          character_id: character_id,
+          enriched_count: length(enriched_kills)
+        )
+
+        enriched_kills
+
+      {:error, reason} ->
+        Logger.error("[Preloader] Failed to fetch character kills",
+          character_id: character_id,
+          error: inspect(reason)
+        )
+
+        []
+    end
+  end
+
+  defp fetch_character_kills_smart(character_id, _past_seconds) do
+    # For now, just use ZkbClient directly for character killmails
+    # TODO: Implement smart rate limiting for character endpoints
+    #   - Similar to SmartRateLimiter.request_system_killmails/3
+    #   - Support character-specific rate limiting to prevent API exhaustion
+    #   - Integrate with RequestCoalescer for deduplication
+    #   - Consider character-specific circuit breakers
+    #   - Tracking issue: Character rate limiting implementation needed
+    ZkbClient.get_character_killmails(character_id)
+  end
+
+  defp enrich_single_killmail(raw_kill) do
+    # Use a far future cutoff time to ensure we don't filter by age
+    cutoff_time = DateTime.add(DateTime.utc_now(), 365 * 24 * 60 * 60, :second)
+
+    case UnifiedProcessor.process_killmail(raw_kill, cutoff_time, store: false, enrich: true) do
+      {:ok, enriched} ->
+        {:ok, enriched}
+
+      {:error, reason} ->
+        Logger.warning("[Preloader] Failed to enrich killmail",
+          killmail_id: raw_kill["killmail_id"],
+          error: inspect(reason)
+        )
+
+        {:error, reason}
+    end
   end
 
   @doc """

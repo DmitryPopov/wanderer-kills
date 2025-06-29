@@ -72,6 +72,7 @@ defmodule WandererKillsWeb.Router do
     pipe_through(:sse)
 
     get("/kills/stream", KillStreamController, :stream)
+    get("/kills/stream/enhanced", EnhancedKillStreamController, :stream)
   end
 
   # API v1 routes

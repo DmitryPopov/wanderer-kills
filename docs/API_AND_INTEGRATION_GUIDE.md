@@ -37,6 +37,7 @@ http://localhost:4004/api/v1
 | GET    | `/killmail/{killmail_id}`       | Get specific killmail       |
 | GET    | `/kills/count/{system_id}`      | Get kill count for system   |
 | GET    | `/kills/stream`                 | Server-Sent Events stream   |
+| GET    | `/kills/stream/enhanced`        | Enhanced SSE with preloading|
 | POST   | `/subscriptions`                | Create webhook subscription |
 | GET    | `/subscriptions`                | List all subscriptions      |
 | GET    | `/subscriptions/stats`          | Get subscription statistics |
@@ -209,13 +210,14 @@ GET /api/v1/kills/count/{system_id}
 
 ### Server-Sent Events (SSE) Stream
 
+WandererKills provides two SSE endpoints:
+
+#### Standard SSE Endpoint
 ```http
 GET /api/v1/kills/stream
 ```
 
-Real-time streaming of killmail data using Server-Sent Events protocol. Perfect for server-side applications that need a simple, unidirectional stream of killmail updates. 
-
-The SSE implementation uses the `sse_phoenix_pubsub` library to seamlessly integrate with Phoenix PubSub, ensuring consistent message delivery across all subscription types.
+Real-time streaming of killmail data using Server-Sent Events protocol. Uses the `sse_phoenix_pubsub` library for seamless Phoenix PubSub integration.
 
 **Query Parameters:**
 - `system_ids` - Comma-separated list of system IDs to filter (e.g., `30000142,30000144`)
@@ -226,6 +228,37 @@ The SSE implementation uses the `sse_phoenix_pubsub` library to seamlessly integ
 ```bash
 curl -N -H "Accept: text/event-stream" \
   "http://localhost:4004/api/v1/kills/stream?system_ids=30000142&min_value=100000000"
+```
+
+#### Enhanced SSE Endpoint (NEW)
+```http
+GET /api/v1/kills/stream/enhanced
+```
+
+Advanced SSE endpoint with character-specific historical data preloading and improved server-side filtering. Perfect for applications that need to catch up on historical killmails before streaming real-time data.
+
+**Query Parameters:**
+- `character_ids` - Comma-separated list of character IDs to track
+- `system_ids` - Comma-separated list of system IDs to filter
+- `min_value` - Minimum ISK value threshold for killmails
+- `preload_days` - Number of days of historical data to preload (0-90)
+
+**Key Features:**
+- **Historical Data Preloading**: Fetch up to 90 days of character or system killmails on connection
+- **Server-Side Filtering**: Only receive killmails matching your filters (90%+ bandwidth reduction)
+- **Clear Mode Transitions**: Explicit signals when switching from historical to real-time data
+- **Character-Specific Topics**: Efficient routing without subscribing to all systems
+
+**Example Requests:**
+```bash
+# Character-based historical preloading
+curl -N "http://localhost:4004/api/v1/kills/stream/enhanced?character_ids=123456789,987654321&preload_days=90"
+
+# System-based historical preloading
+curl -N "http://localhost:4004/api/v1/kills/stream/enhanced?system_ids=30000142,30000143&preload_days=30"
+
+# Character preloading takes precedence if both are specified
+curl -N "http://localhost:4004/api/v1/kills/stream/enhanced?character_ids=123456789&system_ids=30000142&preload_days=90"
 ```
 
 **Response Headers:**
@@ -242,7 +275,7 @@ Connection: keep-alive
 
 ```
 event: connected
-data: SSE stream connected
+data: {"status": "connected", "filters": {...}, "timestamp": "2024-01-15T14:30:00Z"}
 ```
 
 2. **Killmail Event** (new killmail data):
@@ -250,31 +283,37 @@ data: SSE stream connected
 ```
 event: killmail
 data: {"killmail_id": 123456789, "kill_time": "2024-01-15T14:30:00Z", "solar_system_id": 30000142, ...}
-id: 123456789
 ```
 
-3. **Batch Event** (historical data on connection):
+3. **Batch Event** (historical data - enhanced endpoint only):
 
 ```
 event: batch
-data: [{"killmail_id": 123456789, ...}, {"killmail_id": 123456790, ...}]
+data: {"kills": [...], "count": 50, "batch_number": 1, "total_batches": 5}
 ```
 
-4. **Heartbeat Event** (every 30 seconds):
+4. **Transition Event** (enhanced endpoint only):
+
+```
+event: transition
+data: {"status": "historical_complete", "total_historical": 250, "timestamp": "2024-01-15T14:30:00Z"}
+```
+
+5. **Heartbeat Event** (every 30 seconds):
 
 ```
 event: heartbeat
-data: {"timestamp": "2024-01-15T14:30:00Z"}
+data: {"timestamp": "2024-01-15T14:30:00Z", "mode": "realtime"}
 ```
 
-5. **Error Event** (on error conditions):
+6. **Error Event** (on error conditions):
 
 ```
 event: error
-data: {"error": "connection_limit", "message": "Too many connections", "timestamp": "2024-01-15T14:30:00Z"}
+data: {"type": "connection_limit", "message": "Too many connections", "timestamp": "2024-01-15T14:30:00Z"}
 ```
 
-**JavaScript Example:**
+**JavaScript Example (Standard Endpoint):**
 ```javascript
 const eventSource = new EventSource('/api/v1/kills/stream?system_ids=30000142');
 
@@ -287,17 +326,52 @@ eventSource.addEventListener('killmail', (event) => {
   console.log('New killmail:', killmail);
 });
 
-eventSource.addEventListener('batch', (event) => {
-  const killmails = JSON.parse(event.data);
-  console.log('Historical killmails:', killmails);
-});
-
 eventSource.addEventListener('error', (event) => {
   if (event.readyState === EventSource.CLOSED) {
     console.log('Connection was closed');
   } else {
     const error = JSON.parse(event.data);
     console.error('SSE error:', error);
+  }
+});
+```
+
+**JavaScript Example (Enhanced Endpoint with Character Preloading):**
+```javascript
+const eventSource = new EventSource('/api/v1/kills/stream/enhanced?character_ids=12345&preload_days=90');
+
+let isRealtime = false;
+let heartbeatCount = 0;
+
+eventSource.addEventListener('connected', (e) => {
+  console.log('Connected to SSE stream', JSON.parse(e.data));
+});
+
+eventSource.addEventListener('batch', (e) => {
+  const batch = JSON.parse(e.data);
+  console.log(`Historical batch ${batch.batch_number}/${batch.total_batches}`);
+  heartbeatCount = 0; // Reset on data
+});
+
+eventSource.addEventListener('transition', (e) => {
+  console.log('Transitioned to realtime mode', JSON.parse(e.data));
+  isRealtime = true;
+});
+
+eventSource.addEventListener('killmail', (e) => {
+  const killmail = JSON.parse(e.data);
+  console.log(`${isRealtime ? 'Realtime' : 'Historical'} killmail:`, killmail);
+  heartbeatCount = 0; // Reset on data
+});
+
+eventSource.addEventListener('heartbeat', (e) => {
+  heartbeatCount++;
+  const hb = JSON.parse(e.data);
+  
+  // Alternative detection: 3 heartbeats without data = realtime
+  if (!isRealtime && heartbeatCount >= 3) {
+    console.log('Detected realtime mode via heartbeat pattern');
+    isRealtime = true;
   }
 });
 ```

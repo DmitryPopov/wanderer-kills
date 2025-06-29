@@ -139,6 +139,11 @@ config :wanderer_kills,
     connection_timeout: 300_000
   ],
 
+  # Preloader configuration
+  preloader: [
+    system_historical_limit: 1000
+  ],
+
   # Service startup configuration
   services: [
     start_preloader: true,

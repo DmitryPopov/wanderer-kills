@@ -16,6 +16,7 @@ A high-performance, real-time EVE Online killmail data service built with Elixir
 - **Character-Based Subscriptions** - Subscribe to killmails by character IDs (victims or attackers)
 - **System-Based Subscriptions** - Traditional solar system ID filtering
 - **Flexible Filtering** - Combined system and character filtering with OR logic
+- **Historical Data Preloading** - Fetch up to 90 days of character or system killmails via enhanced SSE endpoint
 - **Efficient Caching** - Multi-tiered caching with custom ETS-based cache for optimal performance
 - **ESI Enrichment** - Automatic enrichment with character, corporation, and ship names
 - **Batch Processing** - Efficient bulk operations for multiple systems and characters
@@ -242,13 +243,25 @@ channel.push('unsubscribe_characters', { characters: [95465499] });
 
 SSE provides a lightweight, HTTP-based streaming protocol perfect for server-side applications that need real-time updates without the complexity of WebSockets.
 
+#### Standard SSE Endpoint
 ```bash
 # Connect to SSE stream with filters
 curl -N -H "Accept: text/event-stream" \
   "http://localhost:4004/api/v1/kills/stream?system_ids=30000142,30000144&min_value=100000000"
 ```
 
-**JavaScript Example:**
+#### Enhanced SSE Endpoint (NEW)
+The enhanced endpoint provides historical data preloading for characters or systems:
+
+```bash
+# Connect with 90 days of historical data for specific characters
+curl -N "http://localhost:4004/api/v1/kills/stream/enhanced?character_ids=123456789,987654321&preload_days=90"
+
+# Connect with 30 days of historical data for specific systems
+curl -N "http://localhost:4004/api/v1/kills/stream/enhanced?system_ids=30000142,30000143&preload_days=30"
+```
+
+**JavaScript Example (Standard):**
 ```javascript
 const eventSource = new EventSource('/api/v1/kills/stream?system_ids=30000142&character_ids=95465499');
 
@@ -264,12 +277,61 @@ eventSource.addEventListener('error', (event) => {
 });
 ```
 
+**JavaScript Example (Enhanced with Character Preloading):**
+```javascript
+const eventSource = new EventSource('/api/v1/kills/stream/enhanced?character_ids=12345&preload_days=90');
+
+let isRealtime = false;
+
+eventSource.addEventListener('batch', (e) => {
+  const batch = JSON.parse(e.data);
+  console.log(`Historical batch ${batch.batch_number}/${batch.total_batches}: ${batch.count} kills`);
+});
+
+eventSource.addEventListener('transition', (e) => {
+  console.log('Switched to real-time mode');
+  isRealtime = true;
+});
+
+eventSource.addEventListener('killmail', (e) => {
+  const killmail = JSON.parse(e.data);
+  console.log(`${isRealtime ? 'Real-time' : 'Historical'} kill:`, killmail.killmail_id);
+});
+```
+
+**JavaScript Example (Enhanced with System Preloading):**
+```javascript
+const eventSource = new EventSource('/api/v1/kills/stream/enhanced?system_ids=30000142,30000143&preload_days=30');
+
+let totalHistorical = 0;
+
+eventSource.addEventListener('batch', (e) => {
+  const batch = JSON.parse(e.data);
+  totalHistorical += batch.count;
+  console.log(`System batch ${batch.batch_number}/${batch.total_batches}: ${batch.count} kills`);
+});
+
+eventSource.addEventListener('transition', (e) => {
+  const data = JSON.parse(e.data);
+  console.log(`Historical complete: ${data.total_historical} kills from last 30 days`);
+});
+
+eventSource.addEventListener('killmail', (e) => {
+  const killmail = JSON.parse(e.data);
+  console.log('Real-time system kill:', killmail.killmail_id, 'in system', killmail.solar_system_id);
+});
+```
+
 **Key Features:**
 - Simple HTTP-based protocol
 - Automatic reconnection built into browsers
 - Works through proxies and firewalls
 - No special libraries required for most languages
 - Efficient for one-way server-to-client communication
+- **NEW: Historical data preloading (up to 90 days)**
+- **NEW: Server-side filtering for bandwidth efficiency**
+- **NEW: Clear transition signals between historical and real-time modes**
+- **NEW: Configurable connection limits (max_connections, max_connections_per_ip)**
 
 ### Webhook Subscriptions
 **HTTP callback-based notifications**
@@ -447,6 +509,19 @@ config :wanderer_kills,
     enable_event_streaming: true,
     gc_interval_ms: 60_000,
     max_events_per_system: 10_000
+  ],
+  
+  # SSE connection limits
+  sse: [
+    max_connections: 100,
+    max_connections_per_ip: 10,
+    heartbeat_interval: 30_000,
+    connection_timeout: 300_000
+  ],
+  
+  # Preloader configuration
+  preloader: [
+    system_historical_limit: 1000
   ],
   
   # Monitoring intervals

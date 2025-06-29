@@ -57,6 +57,9 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
     # Also broadcast SSE-formatted messages for SSE subscribers
     broadcast_sse_messages(system_id, kills)
 
+    # Broadcast to character-specific topics
+    broadcast_to_character_topics(kills)
+
     log_broadcast(system_id, kills)
     :ok
   end
@@ -129,6 +132,49 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
   end
 
   defp handle_broadcast_errors(_topic, :ok), do: :ok
+
+  defp broadcast_to_character_topics(kills) do
+    # Broadcast each killmail to the relevant character topics
+    Enum.each(kills, fn kill ->
+      # Extract character IDs from this killmail (victim and attackers)
+      character_ids = extract_character_ids_from_map(kill)
+
+      # Broadcast to each character's topic
+      Enum.each(character_ids, fn char_id ->
+        character_topic = "zkb:character:#{char_id}"
+
+        # Send the individual killmail to the character topic
+        message = {:killmail, kill}
+        :ok = Phoenix.PubSub.broadcast(@pubsub_name, character_topic, message)
+
+        Logger.debug("Broadcasted to character topic",
+          topic: character_topic,
+          killmail_id: Map.get(kill, "killmail_id"),
+          character_id: char_id
+        )
+      end)
+    end)
+
+    :ok
+  end
+
+  defp extract_character_ids_from_map(killmail) when is_map(killmail) do
+    # Extract victim character ID
+    victim_id = get_in(killmail, ["victim", "character_id"])
+
+    # Extract attacker character IDs
+    attackers = Map.get(killmail, "attackers", [])
+
+    attacker_ids =
+      Enum.map(attackers, fn attacker ->
+        Map.get(attacker, "character_id")
+      end)
+
+    # Combine and filter out nils
+    [victim_id | attacker_ids]
+    |> Enum.filter(& &1)
+    |> Enum.uniq()
+  end
 
   defp log_broadcast(system_id, kills) do
     case kills do
