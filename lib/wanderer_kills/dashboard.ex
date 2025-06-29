@@ -9,6 +9,8 @@ defmodule WandererKills.Dashboard do
 
   require Logger
 
+  alias WandererKills.Core.EtsOwner
+
   alias WandererKills.Core.Observability.{
     HealthChecks,
     UnifiedStatus,
@@ -26,6 +28,10 @@ defmodule WandererKills.Dashboard do
                 {:client_offsets, "🔖", "Client Offsets"},
                 {:counters, "🔢", "Counters"}
               ])
+
+  # RedisQ reports stats every 60 seconds. We consider data stale if it's older than
+  # 70 seconds to allow for some processing delay and clock drift
+  @redisq_window_staleness_seconds 70
 
   @doc """
   Gathers all dashboard data needed for display.
@@ -181,13 +187,100 @@ defmodule WandererKills.Dashboard do
   end
 
   defp get_redisq_stats(status) do
+    # Extract RedisQ metrics from the :processing section
+    total_processed = Utils.safe_get(status, [:metrics, :processing, :redisq_received], 0)
+
+    last_killmail_ago =
+      Utils.safe_get(status, [:metrics, :processing, :redisq_last_killmail_ago_seconds], nil)
+
+    processing_lag = Utils.safe_get(status, [:metrics, :processing, :processing_lag_seconds], 0)
+
+    # Calculate processing rate using window-based statistics
+    processing_rate = calculate_current_processing_rate(status)
+
+    # Format last processed time
+    last_processed = format_last_processed_time(last_killmail_ago)
+
     %{
-      total_processed: Utils.safe_get(status, [:redisq, :total_processed], 0),
-      processing_rate: Utils.safe_get(status, [:redisq, :processing_rate], 0),
-      last_processed: Utils.safe_get(status, [:redisq, :last_processed_at]),
-      queue_lag: Utils.safe_get(status, [:redisq, :queue_lag_ms], 0),
-      status:
-        if(Utils.safe_get(status, [:redisq, :total_processed], 0) > 0, do: "active", else: "idle")
+      total_processed: total_processed,
+      processing_rate: processing_rate,
+      last_processed: last_processed,
+      # Convert seconds to milliseconds
+      queue_lag: round(processing_lag * 1000),
+      status: if(total_processed > 0, do: "active", else: "idle")
     }
+  end
+
+  defp calculate_current_processing_rate(status) do
+    # Get the raw RedisQ stats from ETS for more accurate rate calculation
+    case :ets.info(EtsOwner.wanderer_kills_stats_table()) do
+      :undefined ->
+        # If ETS table is not available, fall back to simple calculation
+        total = Utils.safe_get(status, [:metrics, :processing, :redisq_received], 0)
+        calculate_simple_rate_from_total(total)
+
+      _ ->
+        # Try to get the raw stats with window information
+        calculate_rate_from_ets_stats(status)
+    end
+  end
+
+  defp calculate_rate_from_ets_stats(status) do
+    case :ets.lookup(EtsOwner.wanderer_kills_stats_table(), :redisq_stats) do
+      [{:redisq_stats, stats}] when is_map(stats) ->
+        calculate_rate_from_window_stats(stats)
+
+      _ ->
+        # No stats available, use simple calculation
+        total = Utils.safe_get(status, [:metrics, :processing, :redisq_received], 0)
+        calculate_simple_rate_from_total(total)
+    end
+  end
+
+  defp calculate_rate_from_window_stats(stats) do
+    # RedisQ tracks kills_received in 60-second windows
+    # Use the window stats for a more accurate current rate
+    window_kills = Map.get(stats, :kills_received, 0)
+    last_reset = Map.get(stats, :last_reset, DateTime.utc_now())
+
+    # Calculate seconds since last reset
+    seconds_elapsed = DateTime.diff(DateTime.utc_now(), last_reset, :second)
+
+    if seconds_elapsed > 0 and seconds_elapsed <= @redisq_window_staleness_seconds do
+      # If we have a valid window (not stale), calculate rate
+      # Normalize to per-minute rate
+      round(window_kills * 60 / seconds_elapsed)
+    else
+      # Fall back to simple calculation if window is stale
+      total = Map.get(stats, :total_kills_received, 0)
+      calculate_simple_rate_from_total(total)
+    end
+  end
+
+  defp calculate_simple_rate_from_total(total_processed) do
+    # Fallback: Simple average since startup
+    uptime_minutes = max(1, div(uptime_seconds(), 60))
+    round(total_processed / uptime_minutes)
+  end
+
+  defp format_last_processed_time(nil), do: "Never"
+
+  defp format_last_processed_time(seconds_ago) when is_number(seconds_ago) do
+    cond do
+      seconds_ago < 60 -> "#{round(seconds_ago)} seconds ago"
+      seconds_ago < 3600 -> "#{round(seconds_ago / 60)} minutes ago"
+      seconds_ago < 86_400 -> "#{round(seconds_ago / 3600)} hours ago"
+      true -> "#{round(seconds_ago / 86_400)} days ago"
+    end
+  end
+
+  defp format_last_processed_time(_), do: "Unknown"
+
+  # Returns the Erlang VM's wall clock time since start (not the specific application runtime)
+  # This represents how long the BEAM VM has been running, which may be longer than
+  # the actual application uptime if the VM was started before the application
+  defp uptime_seconds do
+    {uptime_ms, _} = :erlang.statistics(:wall_clock)
+    div(uptime_ms, 1000)
   end
 end

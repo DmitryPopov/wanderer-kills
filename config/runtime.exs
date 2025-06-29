@@ -3,20 +3,27 @@ import Config
 # Runtime configuration that can read environment variables
 # This replaces the deprecated init/2 callback in the endpoint
 
+# Helper module for port validation
+defmodule RuntimeConfig.PortValidator do
+  @moduledoc false
+
+  def parse_and_validate_port(port_str, env_var_name) do
+    case Integer.parse(port_str) do
+      {port, ""} when port > 0 and port <= 65_535 ->
+        port
+
+      _ ->
+        raise """
+        Invalid #{env_var_name} environment variable: #{inspect(port_str)}
+        #{env_var_name} must be a valid integer between 1 and 65535
+        """
+    end
+  end
+end
+
 # Configure the port for the Phoenix endpoint
 port_str = System.get_env("PORT") || "4004"
-
-port =
-  case Integer.parse(port_str) do
-    {port, ""} when port > 0 and port <= 65535 ->
-      port
-
-    _ ->
-      raise """
-      Invalid PORT environment variable: #{inspect(port_str)}
-      PORT must be a valid integer between 1 and 65535
-      """
-  end
+port = RuntimeConfig.PortValidator.parse_and_validate_port(port_str, "PORT")
 
 config :wanderer_kills, WandererKillsWeb.Endpoint, http: [port: port]
 
@@ -27,6 +34,21 @@ request_coalescing = System.get_env("REQUEST_COALESCING", "true") == "true"
 config :wanderer_kills, :features,
   smart_rate_limiting: smart_rate_limiting,
   request_coalescing: request_coalescing
+
+# Configure URL settings for production deployment
+# Set HOST for the application URL (defaults to localhost)
+# Set SCHEME for the application URL (defaults to https in prod, http otherwise)
+host = System.get_env("HOST") || "localhost"
+scheme = System.get_env("SCHEME") || if(config_env() == :prod, do: "https", else: "http")
+
+url_port =
+  System.get_env("URL_PORT") || if(config_env() == :prod, do: "443", else: to_string(port))
+
+# Parse URL port using the shared helper function
+url_port_int = RuntimeConfig.PortValidator.parse_and_validate_port(url_port, "URL_PORT")
+
+config :wanderer_kills, WandererKillsWeb.Endpoint,
+  url: [host: host, port: url_port_int, scheme: scheme]
 
 # Configure CORS/WebSocket origin checking
 # In production, set ORIGIN_HOST to your actual domain

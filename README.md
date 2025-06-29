@@ -85,6 +85,10 @@ WandererKills can be configured using the following environment variables:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PORT` | HTTP port to listen on | `4004` |
+| `HOST` | Hostname for production URL | `localhost` |
+| `SCHEME` | URL scheme (http/https) | `https` (prod), `http` (dev) |
+| `URL_PORT` | Port for production URL | `443` (prod), matches `PORT` (dev) |
+| `ORIGIN_HOST` | Domain for CORS/WebSocket origin checking | none (allows all) |
 | `MIX_ENV` | Elixir environment (dev/test/prod) | `prod` |
 | `KILLMAIL_RETENTION_DAYS` | Number of days to retain killmail data | `2` |
 | `MEMORY_THRESHOLD_MB` | Memory usage threshold (MB) before warning | `1000` |
@@ -93,14 +97,24 @@ WandererKills can be configured using the following environment variables:
 #### Example Usage
 
 ```bash
-# Docker
+# Docker production deployment
 docker run -p 4004:4004 \
+  -e HOST=yourdomain.com \
+  -e SCHEME=https \
+  -e URL_PORT=443 \
+  -e PORT=4004 \
+  -e ORIGIN_HOST=https://yourdomain.com \
+  -e MIX_ENV=prod \
   -e KILLMAIL_RETENTION_DAYS=7 \
   -e MEMORY_THRESHOLD_MB=2000 \
   -e EMERGENCY_MEMORY_THRESHOLD_MB=3000 \
   guarzo/wanderer-kills
 
 # Local development
+export HOST=localhost
+export SCHEME=http
+export URL_PORT=4004
+export PORT=4004
 export KILLMAIL_RETENTION_DAYS=7
 export MEMORY_THRESHOLD_MB=2000
 mix phx.server
@@ -385,6 +399,11 @@ See `env.example` for all available environment variables. The primary ones are:
 # Port configuration
 PORT=4004
 
+# Production URL configuration
+HOST=yourdomain.com
+SCHEME=https
+URL_PORT=443
+
 # CORS/WebSocket origin checking (production only)
 ORIGIN_HOST=https://yourdomain.com
 
@@ -585,9 +604,12 @@ docker build -t wanderer-kills:latest .
 # Run with environment variables
 docker run -d \
   -p 4004:4004 \
+  -e HOST=yourdomain.com \
+  -e SCHEME=https \
+  -e URL_PORT=443 \
   -e PORT=4004 \
-  -e MIX_ENV=prod \
   -e ORIGIN_HOST=https://yourdomain.com \
+  -e MIX_ENV=prod \
   --name wanderer-kills \
   guarzo/wanderer-kills:latest
 ```

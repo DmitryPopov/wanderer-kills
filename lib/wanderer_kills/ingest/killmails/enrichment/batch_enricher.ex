@@ -20,7 +20,8 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
           characters: %{entity_id() => entity_data()},
           corporations: %{entity_id() => entity_data()},
           alliances: %{entity_id() => entity_data()},
-          ships: %{entity_id() => entity_data()}
+          ships: %{entity_id() => entity_data()},
+          systems: %{entity_id() => entity_data()}
         }
 
   @doc """
@@ -99,6 +100,7 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
     killmail
     |> enrich_victim(entity_cache)
     |> enrich_attackers(entity_cache)
+    |> enrich_system(entity_cache)
     |> flatten_enriched_data()
   end
 
@@ -111,12 +113,14 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
         characters: MapSet.new(),
         corporations: MapSet.new(),
         alliances: MapSet.new(),
-        ships: MapSet.new()
+        ships: MapSet.new(),
+        systems: MapSet.new()
       },
       fn killmail, acc ->
         acc
         |> collect_victim_ids(killmail["victim"])
         |> collect_attacker_ids(killmail["attackers"] || [])
+        |> collect_system_ids(killmail)
       end
     )
     |> Enum.map(fn {type, set} -> {type, MapSet.to_list(set)} end)
@@ -143,6 +147,12 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
     end)
   end
 
+  defp collect_system_ids(acc, killmail) do
+    acc
+    |> add_id(:systems, killmail["system_id"])
+    |> add_id(:systems, killmail["solar_system_id"])
+  end
+
   defp add_id(acc, _type, nil), do: acc
 
   defp add_id(acc, type, id) when is_integer(id) do
@@ -154,7 +164,8 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
       characters: fetch_batch(:characters, entity_ids[:characters] || []),
       corporations: fetch_batch(:corporations, entity_ids[:corporations] || []),
       alliances: fetch_batch(:alliances, entity_ids[:alliances] || []),
-      ships: fetch_batch(:ships, entity_ids[:ships] || [])
+      ships: fetch_batch(:ships, entity_ids[:ships] || []),
+      systems: fetch_batch(:systems, entity_ids[:systems] || [])
     }
   end
 
@@ -199,6 +210,7 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
   defp get_from_cache(:corporations, id), do: Cache.get(:corporations, id)
   defp get_from_cache(:alliances, id), do: Cache.get(:alliances, id)
   defp get_from_cache(:ships, id), do: Cache.get(:ship_types, id)
+  defp get_from_cache(:systems, id), do: Cache.get(:systems, id)
 
   defp fetch_entity(:characters, id) do
     case Client.get_character(id) do
@@ -244,6 +256,17 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
     end
   end
 
+  defp fetch_entity(:systems, id) do
+    case Client.get_system(id) do
+      {:ok, data} ->
+        Cache.put(:systems, id, data)
+        {:ok, data}
+
+      error ->
+        error
+    end
+  end
+
   defp enrich_victim(killmail, entity_cache) do
     victim = killmail["victim"] || %{}
 
@@ -272,6 +295,18 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
     Map.put(killmail, "attackers", enriched_attackers)
   end
 
+  defp enrich_system(killmail, entity_cache) do
+    system_id = killmail["system_id"] || killmail["solar_system_id"]
+
+    case add_entity_data(%{}, :system, system_id, entity_cache.systems) do
+      %{"system" => system_data} ->
+        Map.put(killmail, "system", system_data)
+
+      _ ->
+        killmail
+    end
+  end
+
   defp add_entity_data(entity, _type, nil, _cache), do: entity
 
   defp add_entity_data(entity, type, id, cache) do
@@ -287,8 +322,11 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
       |> Transformations.flatten_enriched_data()
       |> Transformations.add_attacker_count()
 
-    case Transformations.enrich_with_ship_names(flattened) do
-      {:ok, enriched} -> enriched
+    with {:ok, ship_enriched} <- Transformations.enrich_with_ship_names(flattened),
+         {:ok, system_enriched} <- Transformations.enrich_with_system_name(ship_enriched) do
+      system_enriched
+    else
+      {:error, _} -> flattened
     end
   end
 end

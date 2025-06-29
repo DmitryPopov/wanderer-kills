@@ -4,10 +4,8 @@ import Config
 config :wanderer_kills, env: :prod
 
 # For production, configure the endpoint to load runtime configuration
-# Note: Port and check_origin should be configured in runtime.exs
-config :wanderer_kills, WandererKillsWeb.Endpoint,
-  url: [host: "localhost", port: 443, scheme: "https"],
-  server: true
+# Note: URL, port, and check_origin are now configured in runtime.exs via environment variables
+config :wanderer_kills, WandererKillsWeb.Endpoint, server: true
 
 # Configure logger for production
 config :logger,
