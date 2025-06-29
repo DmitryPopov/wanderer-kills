@@ -56,8 +56,8 @@ defmodule WandererKills.Dashboard do
       # Gather all status information
       status = UnifiedStatus.get_status()
 
-      # Get health information
-      full_health = HealthChecks.check_health()
+      # Get health information - check both application and cache
+      full_health = HealthChecks.check_health(components: [:application, :cache])
       Logger.debug("Full health check result: #{inspect(full_health)}")
 
       # Extract health data safely
@@ -109,13 +109,91 @@ defmodule WandererKills.Dashboard do
 
   defp extract_health_data(full_health, key) do
     case full_health do
-      %{checks: %{^key => health_data}} when is_map(health_data) ->
-        Logger.debug("#{key} health: #{inspect(health_data)}")
-        health_data
+      %{details: %{components: components}} when is_map(components) ->
+        case Map.get(components, key) do
+          %{} = health_data ->
+            Logger.debug("#{key} health: #{inspect(health_data)}")
+            # Extract metrics from the component data
+            extract_component_metrics(health_data, key)
+
+          _ ->
+            Logger.debug("No #{key} health data found, using default")
+            default_health_status()
+        end
 
       _ ->
-        Logger.debug("Using default #{key} health")
+        Logger.debug(
+          "Using default #{key} health due to unexpected format: #{inspect(full_health)}"
+        )
+
         default_health_status()
+    end
+  end
+
+  defp extract_component_metrics(health_data, :application) do
+    # For application health, get the actual metrics from the health check
+    case HealthChecks.get_application_metrics() do
+      {:ok, %{metrics: %{system: system_metrics}}} ->
+        memory_mb = calculate_memory_mb(system_metrics)
+
+        %{
+          status: Map.get(health_data, :status, "healthy"),
+          metrics: %{
+            memory_mb: memory_mb,
+            process_count: Map.get(system_metrics, :process_count, 0),
+            scheduler_usage: calculate_scheduler_usage(),
+            uptime_seconds: Map.get(system_metrics, :uptime_seconds, 0)
+          }
+        }
+
+      _ ->
+        Logger.debug("Failed to get application metrics, using health data")
+        health_data
+    end
+  end
+
+  defp extract_component_metrics(health_data, :cache) do
+    # For cache health, get the actual metrics from the cache health check
+    case HealthChecks.get_cache_metrics() do
+      {:ok, %{metrics: %{aggregate: aggregate_metrics}}} ->
+        %{
+          status: Map.get(health_data, :status, "healthy"),
+          metrics: %{
+            hit_rate: Map.get(aggregate_metrics, :average_hit_rate, 0.0) * 100,
+            size: Map.get(aggregate_metrics, :total_size, 0),
+            eviction_count: Map.get(aggregate_metrics, :total_evictions, 0),
+            expiration_count: Map.get(aggregate_metrics, :total_expirations, 0)
+          }
+        }
+
+      _ ->
+        Logger.debug("Failed to get cache metrics, using health data")
+        health_data
+    end
+  end
+
+  defp calculate_memory_mb(system_metrics) do
+    case Map.get(system_metrics, :memory_usage) do
+      memory_usage when is_list(memory_usage) ->
+        total_bytes = Keyword.get(memory_usage, :total, 0)
+        Float.round(total_bytes / (1024 * 1024), 2)
+
+      _ ->
+        0
+    end
+  end
+
+  defp calculate_scheduler_usage do
+    try do
+      # Get scheduler utilization (this is an approximation)
+      run_queue = :erlang.statistics(:run_queue)
+      schedulers = :erlang.system_info(:schedulers)
+
+      # Calculate as percentage of run queue vs available schedulers
+      usage = run_queue / schedulers * 100
+      Float.round(min(usage, 100.0), 1)
+    rescue
+      _ -> 0.0
     end
   end
 

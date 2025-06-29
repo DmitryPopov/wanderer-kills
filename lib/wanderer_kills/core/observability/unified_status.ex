@@ -160,19 +160,23 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
     redisq_stats = ets_get(EtsOwner.wanderer_kills_stats_table(), :redisq_stats, %{})
     parser_stats = ets_get(EtsOwner.wanderer_kills_stats_table(), :parser_stats, %{})
 
-    redisq_received = Map.get(redisq_stats, :kills_processed, 0)
-    redisq_errors = Map.get(redisq_stats, :errors, 0)
+    # Use the correct field names from RedisQ stats structure
+    redisq_received = Map.get(redisq_stats, :total_kills_received, 0)
+    redisq_errors = Map.get(redisq_stats, :total_errors, 0)
     parser_stored = Map.get(parser_stats, :stored, 0)
     parser_failed = Map.get(parser_stats, :failed, 0)
+
+    # Calculate processing lag based on last kill received
+    processing_lag = calculate_processing_lag(redisq_stats)
 
     %{
       # RedisQ metrics
       redisq_received: redisq_received,
-      redisq_older: Map.get(redisq_stats, :kills_older, 0),
-      redisq_skipped: Map.get(redisq_stats, :kills_skipped, 0),
+      redisq_older: Map.get(redisq_stats, :total_kills_older, 0),
+      redisq_skipped: Map.get(redisq_stats, :total_kills_skipped, 0),
       redisq_errors: redisq_errors,
       redisq_error_rate: error_rate(redisq_errors, redisq_received),
-      redisq_systems: redisq_stats |> Map.get(:active_systems, MapSet.new()) |> MapSet.size(),
+      redisq_systems: redisq_stats |> Map.get(:systems_active, MapSet.new()) |> MapSet.size(),
       redisq_last_killmail_ago_seconds: seconds_since_last_killmail(redisq_stats),
       # Parser metrics
       parser_stored: parser_stored,
@@ -180,7 +184,7 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
       parser_failed: parser_failed,
       parser_success_rate: success_rate(parser_stored, parser_failed),
       # Processing lag
-      processing_lag_seconds: Map.get(redisq_stats, :processing_lag_seconds, 0)
+      processing_lag_seconds: processing_lag
     }
   end
 
@@ -188,6 +192,22 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
     case Map.get(stats, :last_kill_received_at) do
       nil -> 999_999
       timestamp -> System.system_time(:second) - timestamp
+    end
+  end
+
+  defp calculate_processing_lag(redisq_stats) do
+    # Calculate processing lag as the time difference between kills received and current time
+    # If there are recent kills, lag should be low. If no recent activity, lag could be higher.
+    case Map.get(redisq_stats, :last_kill_received_at) do
+      nil ->
+        # No kills received yet, no lag
+        0.0
+
+      last_timestamp ->
+        # Calculate lag as time since last kill received
+        seconds_since = System.system_time(:second) - last_timestamp
+        # Convert to a reasonable lag metric (max 60 seconds to avoid huge numbers)
+        min(seconds_since, 60)
     end
   end
 
