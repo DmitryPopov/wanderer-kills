@@ -54,11 +54,13 @@ jobs:
       - name: Checkout main branch spec
         run: |
           # Get the OpenAPI spec from main branch
-          git show origin/main:priv/static/openapi.yaml > main-spec.yaml 2>/dev/null || echo 'openapi: "3.0.0"
-info:
-  title: "Wanderer Kills API"
-  version: "1.0.0"
-paths: {}' > main-spec.yaml
+          git show origin/main:priv/static/openapi.yaml > main-spec.yaml 2>/dev/null || cat > main-spec.yaml << 'EOF'
+          openapi: "3.0.0"
+          info:
+            title: "Wanderer Kills API"
+            version: "1.0.0"
+          paths: {}
+          EOF
           
           # Convert YAML to JSON for comparison (if the main spec is YAML)
           if [ -f main-spec.yaml ]; then
