@@ -68,8 +68,26 @@ defmodule WandererKills.Dashboard do
         cache: cache_health
       }
 
-      # Get websocket stats from unified status 
-      websocket_stats = Utils.safe_get(status, [:websocket], %{})
+      # Get websocket stats from unified status and transform to expected structure
+      raw_websocket_stats = Utils.safe_get(status, [:websocket], %{})
+
+      # Transform flat structure to nested structure expected by HTML template
+      websocket_stats = %{
+        connections: %{
+          active: Utils.safe_get(raw_websocket_stats, [:connections_active], 0),
+          total: Utils.safe_get(raw_websocket_stats, [:connections_total], 0)
+        },
+        subscriptions: %{
+          active: Utils.safe_get(raw_websocket_stats, [:subscriptions_active], 0),
+          systems: Utils.safe_get(raw_websocket_stats, [:subscriptions_systems], 0),
+          characters: Utils.safe_get(raw_websocket_stats, [:subscriptions_characters], 0)
+        },
+        kills_sent: %{
+          total: Utils.safe_get(raw_websocket_stats, [:kills_sent_total], 0),
+          realtime: Utils.safe_get(raw_websocket_stats, [:kills_sent_realtime], 0),
+          preload: Utils.safe_get(raw_websocket_stats, [:kills_sent_preload], 0)
+        }
+      }
 
       # Get uptime and version safely
       uptime = format_uptime(Utils.safe_get(status, [:system, :uptime_seconds], 0))
