@@ -116,6 +116,7 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
     # SSE metrics
     :ets.insert(@table, {:sse_connections_started, 0})
     :ets.insert(@table, {:sse_connections_active, 0})
+    :ets.insert(@table, {:sse_connections_errors, 0})
     :ets.insert(@table, {:sse_events_sent, 0})
 
     :ets.insert(
@@ -150,9 +151,13 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
       nil
     )
 
-    :telemetry.attach(
+    :telemetry.attach_many(
       "telemetry-metrics-sse-handler",
-      [:wanderer_kills, :sse, :event, :sent],
+      [
+        [:wanderer_kills, :sse, :event, :sent],
+        [:wanderer_kills, :sse, :connection, :start],
+        [:wanderer_kills, :sse, :connection, :error]
+      ],
       &__MODULE__.handle_sse_event/4,
       nil
     )
@@ -225,6 +230,26 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
         initial_metrics = initialize_sse_metrics(event_type)
         :ets.insert(@table, {:sse, initial_metrics})
     end
+  end
+
+  @doc false
+  def handle_sse_event(
+        [:wanderer_kills, :sse, :connection, :start],
+        _measurements,
+        _metadata,
+        _config
+      ) do
+    increment_counter(:sse_connections_started)
+  end
+
+  @doc false
+  def handle_sse_event(
+        [:wanderer_kills, :sse, :connection, :error],
+        _measurements,
+        _metadata,
+        _config
+      ) do
+    increment_counter(:sse_connections_errors)
   end
 
   @doc false

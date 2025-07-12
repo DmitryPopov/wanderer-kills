@@ -286,5 +286,11 @@ config :logger, :console,
   format: "$time $metadata[$level] $message\n",
   metadata: :all
 
+# Configure sse_phoenix_pubsub library
+config :sse_phoenix_pubsub,
+  # 10 seconds instead of default 20
+  keep_alive: 10_000,
+  retry: 2_000
+
 # Import environment specific config
 import_config "#{config_env()}.exs"

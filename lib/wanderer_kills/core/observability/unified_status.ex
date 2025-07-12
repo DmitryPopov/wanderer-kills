@@ -479,6 +479,7 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
     %{
       # Connection metrics
       connections_total: connections_started,
+      connections_errors: Map.get(telemetry_metrics, :sse_connections_errors, 0),
       # Event metrics
       events_sent_total: events_sent_total,
       events_killmails: Map.get(sse_telemetry, :killmail_events, 0),
@@ -488,6 +489,15 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
       events_per_connection:
         if(connections_started > 0,
           do: Float.round(events_sent_total / connections_started, 1),
+          else: 0.0
+        ),
+      error_rate:
+        if(connections_started > 0,
+          do:
+            Float.round(
+              Map.get(telemetry_metrics, :sse_connections_errors, 0) / connections_started * 100,
+              1
+            ),
           else: 0.0
         )
     }
@@ -595,9 +605,9 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
 
     [SSE] Server-Sent Events Streaming
     ─────────────────────────────────────────────────────────────────────
-      Connections   #{format_metric(m.sse.connections_total, "total", 8)}
+      Connections   #{format_metric(m.sse.connections_total, "total", 8)} │ #{format_metric(m.sse.connections_errors, "errors", 8)} │ Error rate: #{m.sse.error_rate}%
       Events Sent   #{format_metric(format_number(m.sse.events_sent_total), "total", 8)} │ #{format_metric(m.sse.events_killmails, "killmails", 12)} │ #{format_metric(m.sse.events_heartbeats, "heartbeats")}
-      Performance   #{format_metric(m.sse.events_per_connection, "events/conn", 15)} │ #{format_metric(m.sse.events_errors, "errors")}
+      Performance   #{format_metric(m.sse.events_per_connection, "events/conn", 15)} │ #{format_metric(m.sse.events_errors, "events errors")}
 
     [STORAGE] Storage & Cache
     ─────────────────────────────────────────────────────────────────────

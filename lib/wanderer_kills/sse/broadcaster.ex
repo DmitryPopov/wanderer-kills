@@ -36,24 +36,10 @@ defmodule WandererKills.SSE.Broadcaster do
         # SSE library expects {pubsub_name, data} format
         message = {@pubsub_name, json_data}
 
-        Logger.debug(
-          "Broadcasting killmail to SSE subscribers",
-          topic: topic,
-          killmail_id: killmail_map["killmail_id"],
-          system_id: killmail_map["system_id"]
-        )
-
         result = Phoenix.PubSub.broadcast(@pubsub_name, topic, message)
 
         # Track SSE event sent
         emit_telemetry(topic, @event_type_killmail)
-
-        Logger.debug(
-          "SSE killmail broadcast completed",
-          topic: topic,
-          killmail_id: killmail_map["killmail_id"],
-          result: inspect(result)
-        )
 
         result
 
@@ -72,12 +58,6 @@ defmodule WandererKills.SSE.Broadcaster do
   """
   @spec broadcast_killmails(String.t(), [map()]) :: :ok | {:error, [term()]}
   def broadcast_killmails(topic, killmails) when is_list(killmails) do
-    Logger.debug(
-      "Broadcasting batch of killmails to SSE subscribers",
-      topic: topic,
-      count: length(killmails)
-    )
-
     results =
       Enum.map(killmails, fn killmail ->
         case broadcast_killmail(topic, killmail) do
@@ -117,7 +97,7 @@ defmodule WandererKills.SSE.Broadcaster do
         # Track SSE test event sent
         emit_telemetry(topic, @event_type_test, "test_broadcast")
 
-        Logger.debug("Sent test message to SSE subscribers", topic: topic)
+        Logger.debug("SSE test message sent", topic: topic)
 
         result
 

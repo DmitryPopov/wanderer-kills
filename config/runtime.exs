@@ -25,7 +25,15 @@ end
 port_str = System.get_env("PORT") || "4004"
 port = RuntimeConfig.PortValidator.parse_and_validate_port(port_str, "PORT")
 
-config :wanderer_kills, WandererKillsWeb.Endpoint, http: [port: port]
+config :wanderer_kills, WandererKillsWeb.Endpoint,
+  http: [
+    port: port,
+    # Increase timeouts for SSE connections
+    protocol_options: [
+      idle_timeout: :infinity,
+      request_timeout: :infinity
+    ]
+  ]
 
 # Configure feature flags from environment variables
 smart_rate_limiting = System.get_env("SMART_RATE_LIMITING", "true") == "true"
@@ -102,8 +110,8 @@ if config_env() == :dev do
     ],
     socket_drainer_timeout: 60_000
 
-  # Enable Phoenix debug logs in development
-  config :phoenix, :logger, true
+  # Reduce Phoenix HTTP request logging noise
+  config :phoenix, :logger, false
   config :phoenix, :stacktrace_depth, 20
 end
 

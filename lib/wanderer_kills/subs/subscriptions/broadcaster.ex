@@ -40,24 +40,18 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
       timestamp: DateTime.utc_now()
     }
 
-    Logger.debug("Broadcasting killmail update",
-      system_id: system_id,
-      kills_count: length(kills)
-    )
+    Logger.debug("Broadcasting killmail update", system_id: system_id, kills_count: length(kills))
 
     # Broadcast to system-specific topic
     system_topic = PubSubTopics.system_topic(system_id)
-    Logger.debug("Broadcasting to system topic", topic: system_topic)
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, system_topic, message)
 
     # Broadcast to detailed system topic as well
     detailed_topic = PubSubTopics.system_detailed_topic(system_id)
-    Logger.debug("Broadcasting to detailed topic", topic: detailed_topic)
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, detailed_topic, message)
 
     # Broadcast to all systems topic
     all_systems_topic = PubSubTopics.all_systems_topic()
-    Logger.debug("Broadcasting to all systems topic", topic: all_systems_topic)
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, all_systems_topic, message)
 
     # Also broadcast SSE-formatted messages for SSE subscribers
@@ -101,7 +95,7 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
     detailed_topic = PubSubTopics.system_detailed_topic(system_id)
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, detailed_topic, message)
 
-    Logger.debug("Broadcasted killmail count update", system_id: system_id, count: count)
+    Logger.debug("Broadcasting killmail count update", system_id: system_id, count: count)
 
     :ok
   end
@@ -159,12 +153,6 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
         # Send the individual killmail to the character topic
         message = {:killmail, kill}
         :ok = Phoenix.PubSub.broadcast(@pubsub_name, character_topic, message)
-
-        Logger.debug("Broadcasted to character topic",
-          topic: character_topic,
-          killmail_id: Map.get(kill, "killmail_id"),
-          character_id: char_id
-        )
       end)
     end)
 

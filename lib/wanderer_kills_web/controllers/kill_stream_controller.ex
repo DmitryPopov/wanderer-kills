@@ -71,8 +71,11 @@ defmodule WandererKillsWeb.KillStreamController do
         # Determine PubSub topics based on filters
         topics = determine_topics(filters)
 
-        Logger.info(
-          "Starting SSE stream - IP: #{remote_ip}, Topics: #{inspect(topics)}, Filters: #{format_filters(filters)}"
+        Logger.debug(
+          "Starting SSE stream",
+          ip: remote_ip,
+          topics: topics,
+          filters: format_filters(filters)
         )
 
         # Track SSE connection start
@@ -87,7 +90,36 @@ defmodule WandererKillsWeb.KillStreamController do
 
         # Stream events from PubSub topics using sse_phoenix_pubsub
         # This function hijacks the connection and never returns
-        SsePhoenixPubsub.stream(conn, {WandererKills.PubSub, topics})
+        try do
+          SsePhoenixPubsub.stream(conn, {WandererKills.PubSub, topics})
+        rescue
+          error ->
+            Logger.error("SSE stream error", connection_id: connection_id, error: inspect(error))
+
+            # Track SSE connection error
+            :telemetry.execute([:wanderer_kills, :sse, :connection, :error], %{count: 1}, %{
+              connection_id: connection_id,
+              error: inspect(error)
+            })
+
+            # Re-raise to let Phoenix handle the error response
+            reraise error, __STACKTRACE__
+        catch
+          type, error ->
+            Logger.error("SSE stream exception",
+              connection_id: connection_id,
+              error: "#{type}: #{inspect(error)}"
+            )
+
+            # Track SSE connection error
+            :telemetry.execute([:wanderer_kills, :sse, :connection, :error], %{count: 1}, %{
+              connection_id: connection_id,
+              error: "#{type}: #{inspect(error)}"
+            })
+
+            # Re-throw to let Phoenix handle the error response
+            :erlang.raise(type, error, __STACKTRACE__)
+        end
 
       {:error, %Error{} = error} ->
         Logger.warning("Invalid SSE stream parameters", error: error, params: params)

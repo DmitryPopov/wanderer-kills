@@ -32,7 +32,7 @@ defmodule WandererKillsWeb.Router do
 
   pipeline :sse do
     # Don't use accepts plug for SSE - let the controller handle content type
-    plug(WandererKillsWeb.Plugs.ApiLogger)
+    # Skip ApiLogger for SSE to reduce log noise
   end
 
   pipeline :debug do
