@@ -102,6 +102,8 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
     :ets.insert(@table, {:broadcast_tasks_started, 0})
     :ets.insert(@table, {:broadcast_tasks_completed, 0})
     :ets.insert(@table, {:broadcast_tasks_failed, 0})
+    :ets.insert(@table, {:broadcasts_sent, 0})
+    :ets.insert(@table, {:broadcast_kills_total, 0})
 
     # Maintenance metrics
     :ets.insert(@table, {:maintenance_tasks_started, 0})
@@ -154,12 +156,23 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
       &__MODULE__.handle_sse_event/4,
       nil
     )
+
+    :telemetry.attach_many(
+      "telemetry-metrics-broadcast-handler",
+      [
+        [:wanderer_kills, :broadcast, :killmail_update],
+        [:wanderer_kills, :broadcast, :killmail_count]
+      ],
+      &__MODULE__.handle_broadcast_event/4,
+      nil
+    )
   end
 
   defp detach_handlers do
     :telemetry.detach("telemetry-metrics-task-handler")
     :telemetry.detach("telemetry-metrics-preload-handler")
     :telemetry.detach("telemetry-metrics-sse-handler")
+    :telemetry.detach("telemetry-metrics-broadcast-handler")
   end
 
   @doc false
@@ -212,6 +225,28 @@ defmodule WandererKills.Core.Observability.TelemetryMetrics do
         initial_metrics = initialize_sse_metrics(event_type)
         :ets.insert(@table, {:sse, initial_metrics})
     end
+  end
+
+  @doc false
+  def handle_broadcast_event(
+        [:wanderer_kills, :broadcast, :killmail_update],
+        measurements,
+        _metadata,
+        _config
+      ) do
+    kills_count = Map.get(measurements, :kills_count, 0)
+    increment_counter(:broadcasts_sent)
+    :ets.update_counter(@table, :broadcast_kills_total, kills_count, {:broadcast_kills_total, 0})
+  end
+
+  @doc false
+  def handle_broadcast_event(
+        [:wanderer_kills, :broadcast, :killmail_count],
+        _measurements,
+        _metadata,
+        _config
+      ) do
+    increment_counter(:broadcasts_sent)
   end
 
   defp update_sse_event_counter(current_metrics, event_type) do

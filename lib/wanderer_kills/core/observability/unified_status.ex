@@ -237,6 +237,10 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
   end
 
   defp format_ws_metrics(stats) do
+    # Get broadcast metrics from telemetry
+    telemetry_metrics =
+      safe_apply(WandererKills.Core.Observability.TelemetryMetrics, :get_metrics, [], %{})
+
     %{
       connections_active: get_in(stats, [:connections, :active]) || 0,
       connections_total: get_in(stats, [:connections, :total_connected]) || 0,
@@ -245,7 +249,9 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
       subscriptions_characters: get_in(stats, [:subscriptions, :total_characters]) || 0,
       kills_sent_realtime: get_in(stats, [:kills_sent, :realtime]) || 0,
       kills_sent_preload: get_in(stats, [:kills_sent, :preload]) || 0,
-      kills_sent_total: get_in(stats, [:kills_sent, :total]) || 0
+      kills_sent_total: get_in(stats, [:kills_sent, :total]) || 0,
+      broadcasts_sent: Map.get(telemetry_metrics, :broadcasts_sent, 0),
+      broadcast_kills_total: Map.get(telemetry_metrics, :broadcast_kills_total, 0)
     }
   end
 
@@ -268,9 +274,17 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
   ### Cache
 
   defp collect_cache_metrics do
+    # Get size directly first, as it's more reliable
+    cache_size =
+      case Cache.size() do
+        {:ok, size} -> size
+        _ -> 0
+      end
+
     case Cache.stats() do
       {:ok, stats} ->
-        size = Map.get(stats, :size, 0)
+        # Use actual cache size instead of stats size
+        size = cache_size
         hits = Map.get(stats, :hits, 0)
         misses = Map.get(stats, :misses, 0)
         evictions = Map.get(stats, :evictions, 0)
@@ -292,8 +306,8 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
 
       _ ->
         %{
-          size: 0,
-          memory_mb: 0.0,
+          size: cache_size,
+          memory_mb: Float.round(cache_size * 1024 / 1_048_576, 1),
           hit_rate: 0.0,
           miss_rate: 0.0,
           evictions: 0,
@@ -402,7 +416,10 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
       total_subscriptions:
         Map.get(sub_stats, :http_subscription_count, 0) +
           Map.get(sub_stats, :websocket_subscription_count, 0),
-      active_webhooks: Map.get(sub_stats, :http_subscription_count, 0)
+      active_webhooks: Map.get(sub_stats, :http_subscription_count, 0),
+      # Broadcast metrics from telemetry
+      broadcasts_sent: Map.get(telemetry_metrics, :broadcasts_sent, 0),
+      broadcast_kills_total: Map.get(telemetry_metrics, :broadcast_kills_total, 0)
     }
   end
 
@@ -574,6 +591,7 @@ defmodule WandererKills.Core.Observability.UnifiedStatus do
       Connections   #{format_metric(m.websocket.connections_active, "active", 8)} / #{format_metric(m.websocket.connections_total, "total")}
       Subscriptions #{format_metric(m.websocket.subscriptions_active, "active", 8)} │ #{format_metric(m.websocket.subscriptions_systems, "systems", 10)} │ #{format_metric(m.websocket.subscriptions_characters, "characters")}
       Kills Sent    #{format_metric(format_number(m.websocket.kills_sent_total), "total", 8)} │ #{format_metric(m.websocket.kills_sent_realtime, "real-time", 12)} │ #{format_metric(m.websocket.kills_sent_preload, "preload")}
+      Broadcasts    #{format_metric(m.websocket.broadcasts_sent, "sent", 8)} │ #{format_metric(format_number(m.websocket.broadcast_kills_total), "kills", 12)}
 
     [SSE] Server-Sent Events Streaming
     ─────────────────────────────────────────────────────────────────────

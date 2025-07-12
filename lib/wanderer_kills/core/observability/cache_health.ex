@@ -91,10 +91,17 @@ defmodule WandererKills.Core.Observability.CacheHealth do
     base_metrics = %{name: cache_name}
 
     try do
+      # Get size directly first, as it's more reliable
+      cache_size =
+        case Cache.size() do
+          {:ok, size} -> size
+          _ -> 0
+        end
+
       case Cache.stats() do
         {:ok, stats} ->
           Map.merge(base_metrics, %{
-            size: Map.get(stats, :size, 0),
+            size: cache_size,
             hit_rate: Map.get(stats, :hit_rate, 0.0),
             miss_rate: Map.get(stats, :miss_rate, 0.0),
             eviction_count: Map.get(stats, :eviction_count, 0),

@@ -26,6 +26,13 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
   """
   @spec broadcast_killmail_update(integer(), list(map())) :: :ok
   def broadcast_killmail_update(system_id, kills) do
+    # Emit telemetry event for broadcast tracking
+    :telemetry.execute(
+      [:wanderer_kills, :broadcast, :killmail_update],
+      %{kills_count: length(kills)},
+      %{system_id: system_id, topic_count: 3}
+    )
+
     message = %{
       type: :killmail_update,
       system_id: system_id,
@@ -33,25 +40,24 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
       timestamp: DateTime.utc_now()
     }
 
-    Logger.debug("=== BROADCASTER SENDING ===",
+    Logger.debug("Broadcasting killmail update",
       system_id: system_id,
-      kills_count: length(kills),
-      message: inspect(message)
+      kills_count: length(kills)
     )
 
     # Broadcast to system-specific topic
     system_topic = PubSubTopics.system_topic(system_id)
-    Logger.debug("Broadcasting to system topic: #{system_topic}")
+    Logger.debug("Broadcasting to system topic", topic: system_topic)
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, system_topic, message)
 
     # Broadcast to detailed system topic as well
     detailed_topic = PubSubTopics.system_detailed_topic(system_id)
-    Logger.debug("Broadcasting to detailed topic: #{detailed_topic}")
+    Logger.debug("Broadcasting to detailed topic", topic: detailed_topic)
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, detailed_topic, message)
 
     # Broadcast to all systems topic
     all_systems_topic = PubSubTopics.all_systems_topic()
-    Logger.debug("Broadcasting to all systems topic: #{all_systems_topic}")
+    Logger.debug("Broadcasting to all systems topic", topic: all_systems_topic)
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, all_systems_topic, message)
 
     # Also broadcast SSE-formatted messages for SSE subscribers
@@ -73,6 +79,13 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
   """
   @spec broadcast_killmail_count(integer(), integer()) :: :ok
   def broadcast_killmail_count(system_id, count) do
+    # Emit telemetry event for count broadcast tracking
+    :telemetry.execute(
+      [:wanderer_kills, :broadcast, :killmail_count],
+      %{count: count},
+      %{system_id: system_id, topic_count: 2}
+    )
+
     message = %{
       type: :killmail_count_update,
       system_id: system_id,
@@ -88,7 +101,7 @@ defmodule WandererKills.Subs.Subscriptions.Broadcaster do
     detailed_topic = PubSubTopics.system_detailed_topic(system_id)
     :ok = Phoenix.PubSub.broadcast(@pubsub_name, detailed_topic, message)
 
-    Logger.debug("Broadcasted killmail count update system_id=#{system_id} count=#{count}")
+    Logger.debug("Broadcasted killmail count update", system_id: system_id, count: count)
 
     :ok
   end
