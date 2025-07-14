@@ -550,3 +550,80 @@ jobs:
             git push origin "$TAG" "$MAJOR_TAG" "$MINOR_TAG"
           fi
           echo "TAG=$TAG" >> $GITHUB_OUTPUT
+
+  deploy:
+    name: Deploy to Server
+    needs: [test, docker]
+    runs-on: ubuntu-latest
+    # Deploy on push to main branch (uses latest tag)
+    if: github.ref == 'refs/heads/main'
+    
+    environment: production
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Deploy to production server
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          # Environment variables based on env.example
+          PORT: 4004
+          MIX_ENV: prod
+          REPLACE_OS_VARS: true
+          HOME: /app
+          LANG: en_US.UTF-8
+          LANGUAGE: en_US:en
+          LC_ALL: en_US.UTF-8
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          envs: PORT,MIX_ENV,REPLACE_OS_VARS,HOME,LANG,LANGUAGE,LC_ALL
+          script: |
+            echo "🚀 Starting deployment for WandererKills (latest)"
+            
+            # Set environment variables for the deployment
+            export PORT=$PORT
+            export MIX_ENV=$MIX_ENV
+            export REPLACE_OS_VARS=$REPLACE_OS_VARS
+            export HOME=$HOME
+            export LANG=$LANG
+            export LANGUAGE=$LANGUAGE
+            export LC_ALL=$LC_ALL
+            
+            # Navigate to application directory
+            cd /app || { echo "❌ Failed to navigate to /app directory"; exit 1; }
+            
+            # Verify compose-manager.sh exists
+            if [ ! -f "./compose-manager.sh" ]; then
+              echo "❌ compose-manager.sh not found in /app directory"
+              exit 1
+            fi
+            
+            # Make sure compose-manager.sh is executable
+            chmod +x ./compose-manager.sh
+            
+            # Run the upgrade command
+            echo "🔄 Running compose-manager.sh upgrade wanderer-kills"
+            ./compose-manager.sh upgrade wanderer-kills
+            
+            if [ $? -eq 0 ]; then
+              echo "✅ Deployment completed successfully"
+            else
+              echo "❌ Deployment failed"
+              exit 1
+            fi
+      
+      - name: Deployment status notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ **Deployment Successful**" >> $GITHUB_STEP_SUMMARY
+            echo "- Image: guarzo/wanderer-kills:latest" >> $GITHUB_STEP_SUMMARY
+            echo "- Target: Production Server" >> $GITHUB_STEP_SUMMARY
+            echo "- Command: ./compose-manager.sh upgrade wanderer-kills" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Deployment Failed**" >> $GITHUB_STEP_SUMMARY
+            echo "- Check the deployment logs for details" >> $GITHUB_STEP_SUMMARY
+          fi
