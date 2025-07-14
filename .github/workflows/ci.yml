@@ -593,11 +593,11 @@ jobs:
             export LC_ALL=$LC_ALL
             
             # Navigate to application directory
-            cd /app || { echo "❌ Failed to navigate to /app directory"; exit 1; }
+            cd /app/wanderer || { echo "❌ Failed to navigate to /app/wanderer directory"; exit 1; }
             
             # Verify compose-manager.sh exists
             if [ ! -f "./compose-manager.sh" ]; then
-              echo "❌ compose-manager.sh not found in /app directory"
+              echo "❌ compose-manager.sh not found in /app/wanderer directory"
               exit 1
             fi
             
