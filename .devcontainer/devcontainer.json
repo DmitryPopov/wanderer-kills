@@ -1,36 +1,78 @@
+// .devcontainer.json
 {
   "name": "wanderer-kills-dev",
   "dockerComposeFile": ["./docker-compose.yml"],
+  "service": "wanderer-kills",
+  "workspaceFolder": "/app",
+  "shutdownAction": "stopCompose",                 // pull in your secrets & config
   "customizations": {
     "vscode": {
       "extensions": [
+        "phoenixframework.phoenix",
         "jakebecker.elixir-ls",
-        "JakeBecker.elixir-ls",
-        "dbaeumer.vscode-eslint",
-        "esbenp.prettier-vscode"
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+        "ms-vscode.vscode-json",
+        "redhat.vscode-yaml",
+        "dbaeumer.vscode-eslint"
       ],
       "settings": {
+        // 🐚 Use bash by default in the integrated terminal
+        "terminal.integrated.shell.linux": "/usr/bin/zsh",
+
+        // 🔧 Format on save across all languages
         "editor.formatOnSave": true,
-        "search.exclude": {
-          "**/doc": true
+
+        // 📁 Point Elixir LS at the right project root
+        "elixir.projectPath": "/app",
+
+        // 🚀 LSP tweaks—you’ve already installed deps in your Dockerfile,
+        // so we don’t need LS to fetch them again:
+        "elixirLS.fetchDeps": false,
+
+        // 💡 Dialyzer: now that your build stage compiled your Dialyzer PLTs,
+        // you can safely enable this (but be aware it’ll run in the background):
+        "elixirLS.dialyzerEnabled": true,
+
+        // 📝 Turn on test lenses to jump to your `test "…"` blocks
+        "elixirLS.enableTestLenses": true,
+
+        // 🐍 We’re handling specs elsewhere; no need for on-the-fly suggestions:
+        "elixir.suggestSpecs": false,
+        "elixirLS.suggestSpecs": false,
+
+        // 🔗 Force correct syntax highlighting in templates
+        "files.associations": {
+          "*.ex": "elixir",
+          "*.exs": "elixir",
+          "*.eex": "eex",
+          "*.leex": "eex",
+          "*.heex": "phoenix-heex"
         },
-        "elixirLS.dialyzerEnabled": false
+
+        // 🌐 Let Emmet expand inside HEEx and Elixir files (for your HTML snippets)
+        "emmet.includeLanguages": {
+          "phoenix-heex": "html",
+          "elixir": "html"
+        }
       }
-    }
+    }    
   },
-  "service": "wanderer-kills",
-  "workspaceFolder": "/app",
-  "shutdownAction": "stopCompose",
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": {
       "networkArgs": ["--add-host=host.docker.internal:host-gateway"]
     }
   },
+  "mounts": [
+    "source=elixir-artifacts,target=/opt/deps,type=volume"
+  ],
   "forwardPorts": [4004],
   "portsAttributes": {
     "4004": {
       "label": "Wanderer Kills API",
       "onAutoForward": "notify"
     }
-  }
+  },
+   "postCreateCommand": "./.devcontainer/setup.sh",
+   "postStartCommand": "echo 'Dev container is ready!'; sleep 0.5"
 }

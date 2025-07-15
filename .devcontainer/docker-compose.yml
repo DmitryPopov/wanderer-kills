@@ -1,10 +1,11 @@
+# docker-compose.yml
 version: "3.8"
 
 services:
   wanderer-kills:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..                          # ← use the repo root
+      dockerfile: .devcontainer/Dockerfile # ← path to your Dockerfile
     environment:
       PORT: 4004
       MIX_ENV: dev
@@ -15,16 +16,15 @@ services:
     networks:
       - default
     volumes:
-      # Mount source code for development
       - ..:/app:delegated
-      # Cache Elixir artifacts for faster rebuilds
-      - elixir-artifacts:/opt/elixir-artifacts
-    # Keep container running for development
+      - elixir-deps:/app/deps            # cache deps
+      - elixir-build:/app/_build         # cache build artifacts
     command: sleep infinity
+    user: "vscode"                  # run as non-root user
 
 volumes:
-  elixir-artifacts: {}
+  elixir-deps:
+  elixir-build:
 
-networks:
-  default:
-    name: wanderer-kills-network
+
+
