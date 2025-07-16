@@ -144,6 +144,17 @@ config :wanderer_kills,
     system_historical_limit: 1000
   ],
 
+  # Historical streaming configuration
+  historical_streaming: [
+    enabled: false,
+    start_date: "20240101",
+    daily_limit: 5000,
+    batch_size: 50,
+    batch_interval_ms: 10_000,
+    max_retries: 3,
+    retry_delay_ms: 5_000
+  ],
+
   # Service startup configuration
   services: [
     start_preloader: true,

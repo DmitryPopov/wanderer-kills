@@ -44,7 +44,12 @@ defmodule WandererKillsWeb.PageHTML do
     """
   end
 
-  defp stats_section(%{status: status, websocket_stats: websocket_stats, uptime: uptime}) do
+  defp stats_section(%{
+         status: status,
+         websocket_stats: websocket_stats,
+         uptime: uptime,
+         historical_stats: historical_stats
+       }) do
     """
     <div class="stats-grid">
       <div class="stat-card">
@@ -63,6 +68,11 @@ defmodule WandererKillsWeb.PageHTML do
         <h3>WebSocket Connections</h3>
         <div class="value">#{format_number(Utils.safe_get(websocket_stats, [:connections, :active]))}</div>
       </div>
+      <div class="stat-card">
+        <h3>Historical Progress</h3>
+        <div class="value">#{format_percentage(Map.get(historical_stats, :progress, 0))}</div>
+        <div class="subtitle">#{Map.get(historical_stats, :status, "Disabled")}</div>
+      </div>
     </div>
     """
   end
@@ -72,7 +82,8 @@ defmodule WandererKillsWeb.PageHTML do
          status: status,
          websocket_stats: websocket_stats,
          ets_stats: ets_stats,
-         redisq_stats: redisq_stats
+         redisq_stats: redisq_stats,
+         historical_stats: historical_stats
        }) do
     """
     <div class="health-grid">
@@ -82,6 +93,7 @@ defmodule WandererKillsWeb.PageHTML do
       #{message_delivery_card(websocket_stats, status)}
       #{ets_storage_card(ets_stats)}
       #{redisq_pipeline_card(redisq_stats)}
+      #{historical_streaming_card(historical_stats)}
     </div>
     """
   end
@@ -303,6 +315,49 @@ defmodule WandererKillsWeb.PageHTML do
     """
   end
 
+  defp historical_streaming_card(historical_stats) do
+    status_class =
+      cond do
+        not historical_stats.enabled -> "disabled"
+        historical_stats.running and not historical_stats.paused -> "success"
+        historical_stats.paused -> "warning"
+        true -> "error"
+      end
+
+    """
+    <div class="health-card">
+      <div class="health-header">
+        <h3 class="health-title">Historical Streaming</h3>
+        <span class="health-status #{status_class}">
+          📚 #{historical_stats.status}
+        </span>
+      </div>
+      <div class="metrics">
+        <div class="metric-row">
+          <span class="metric-label">Progress</span>
+          <span class="metric-value">#{format_percentage(historical_stats.progress)}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Current Date</span>
+          <span class="metric-value">#{format_date(historical_stats.current_date)}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Processed</span>
+          <span class="metric-value">#{format_number(historical_stats.processed_count)}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Failed</span>
+          <span class="metric-value">#{format_number(historical_stats.failed_count)}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Queue Size</span>
+          <span class="metric-value">#{format_number(historical_stats.queue_size)}</span>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
   defp endpoints_section do
     """
     <div class="endpoints-section">
@@ -364,6 +419,10 @@ defmodule WandererKillsWeb.PageHTML do
   end
 
   defp format_memory_mb(_), do: "0"
+
+  defp format_date(nil), do: "N/A"
+  defp format_date(%Date{} = date), do: Date.to_string(date)
+  defp format_date(_), do: "N/A"
 
   defp health_status_class(status) when status in ["healthy", :healthy, "ok", :ok], do: "success"
 

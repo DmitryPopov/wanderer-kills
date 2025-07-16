@@ -24,8 +24,10 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
     preload: 2,
     # Background system updates
     background: 3,
+    # Historical streaming (low priority)
+    historical: 4,
     # Bulk operations
-    bulk: 4
+    bulk: 5
   }
 
   defmodule State do

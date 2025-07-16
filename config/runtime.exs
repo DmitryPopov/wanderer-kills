@@ -43,6 +43,38 @@ config :wanderer_kills, :features,
   smart_rate_limiting: smart_rate_limiting,
   request_coalescing: request_coalescing
 
+# Helper function to safely parse positive integers from environment variables
+parse_positive_integer! = fn env_var, default ->
+  value = System.get_env(env_var, default)
+
+  case Integer.parse(value) do
+    {parsed, ""} when parsed > 0 ->
+      parsed
+
+    {parsed, ""} ->
+      raise ArgumentError,
+            "Environment variable #{env_var} must be a positive integer, got: #{parsed}"
+
+    _ ->
+      raise ArgumentError,
+            "Environment variable #{env_var} must be a valid integer, got: #{inspect(value)}"
+  end
+end
+
+# Configure historical streaming from environment variables
+historical_streaming_enabled = System.get_env("HISTORICAL_STREAMING_ENABLED", "false") == "true"
+historical_start_date = System.get_env("HISTORICAL_START_DATE", "20240101")
+historical_daily_limit = parse_positive_integer!.("HISTORICAL_DAILY_LIMIT", "5000")
+historical_batch_size = parse_positive_integer!.("HISTORICAL_BATCH_SIZE", "50")
+historical_batch_interval_ms = parse_positive_integer!.("HISTORICAL_BATCH_INTERVAL_MS", "10000")
+
+config :wanderer_kills, :historical_streaming,
+  enabled: historical_streaming_enabled,
+  start_date: historical_start_date,
+  daily_limit: historical_daily_limit,
+  batch_size: historical_batch_size,
+  batch_interval_ms: historical_batch_interval_ms
+
 # Configure URL settings for production deployment
 # Set HOST for the application URL (defaults to localhost)
 # Set SCHEME for the application URL (defaults to https in prod, http otherwise)

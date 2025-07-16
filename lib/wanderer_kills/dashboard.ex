@@ -104,6 +104,9 @@ defmodule WandererKills.Dashboard do
       # Get RedisQ processing statistics
       redisq_stats = get_redisq_stats(status)
 
+      # Get historical streaming statistics
+      historical_stats = get_historical_streaming_stats()
+
       data = %{
         status: status,
         health: health,
@@ -111,7 +114,8 @@ defmodule WandererKills.Dashboard do
         uptime: uptime,
         version: version,
         ets_stats: ets_stats,
-        redisq_stats: redisq_stats
+        redisq_stats: redisq_stats,
+        historical_stats: historical_stats
       }
 
       {:ok, data}
@@ -375,5 +379,119 @@ defmodule WandererKills.Dashboard do
   defp uptime_seconds do
     {uptime_ms, _} = :erlang.statistics(:wall_clock)
     div(uptime_ms, 1000)
+  end
+
+  # Gets historical streaming statistics from the HistoricalStreamer process.
+  # 
+  # Returns statistics about the current historical streaming progress including:
+  # - Current date being processed
+  # - Total processed count
+  # - Failed count
+  # - Progress percentage
+  # - Current status (running/paused)
+  defp get_historical_streaming_stats do
+    config = Application.get_env(:wanderer_kills, :historical_streaming, %{})
+
+    if Map.get(config, :enabled, false) do
+      get_enabled_streaming_stats(config)
+    else
+      format_disabled_streaming_stats()
+    end
+  end
+
+  defp get_enabled_streaming_stats(config) do
+    case safely_get_streaming_status() do
+      {:ok, status} ->
+        format_running_streaming_stats(status, config)
+
+      {:error, :not_started} ->
+        format_not_started_streaming_stats()
+
+      {:error, :process_exited} ->
+        format_error_streaming_stats("Process exited")
+
+      {:error, _reason} ->
+        format_error_streaming_stats("Error getting status")
+    end
+  end
+
+  defp safely_get_streaming_status do
+    streamer_module = WandererKills.Ingest.Historical.HistoricalStreamer
+
+    case GenServer.whereis(streamer_module) do
+      nil ->
+        {:error, :not_started}
+
+      pid when is_pid(pid) ->
+        try do
+          case streamer_module.status() do
+            %{} = status -> {:ok, status}
+            _ -> {:error, :invalid_status}
+          end
+        catch
+          :exit, {:noproc, _} ->
+            {:error, :process_exited}
+
+          :exit, reason ->
+            {:error, {:exit, reason}}
+
+          _, _ ->
+            {:error, :unknown_error}
+        end
+    end
+  end
+
+  defp format_running_streaming_stats(status, config) do
+    %{
+      enabled: true,
+      running: true,
+      status: if(status.paused, do: "Paused", else: "Running"),
+      progress: status.progress_percentage,
+      current_date: status.current_date,
+      processed_count: status.processed_count,
+      failed_count: status.failed_count,
+      queue_size: status.queue_size,
+      start_date: Map.get(config, :start_date, "unknown"),
+      end_date: status.end_date
+    }
+  end
+
+  defp format_not_started_streaming_stats do
+    %{
+      enabled: true,
+      running: false,
+      status: "Not started",
+      progress: 0.0,
+      current_date: nil,
+      processed_count: 0,
+      failed_count: 0,
+      queue_size: 0
+    }
+  end
+
+  defp format_error_streaming_stats(error_message) do
+    %{
+      enabled: true,
+      running: false,
+      status: error_message,
+      progress: 0.0,
+      current_date: nil,
+      processed_count: 0,
+      failed_count: 0,
+      queue_size: 0
+    }
+  end
+
+  defp format_disabled_streaming_stats do
+    %{
+      enabled: false,
+      running: false,
+      status: "Disabled",
+      progress: 0.0,
+      current_date: nil,
+      processed_count: 0,
+      failed_count: 0,
+      queue_size: 0
+    }
   end
 end

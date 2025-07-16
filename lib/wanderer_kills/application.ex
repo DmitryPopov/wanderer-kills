@@ -42,6 +42,7 @@ defmodule WandererKills.Application do
       (core_children() ++ cache_children() ++ observability_children())
       |> maybe_web_components()
       |> maybe_redisq()
+      |> maybe_historical_streaming()
 
     # 4) Start the supervisor
     opts = [strategy: :one_for_one, name: WandererKills.Supervisor]
@@ -168,6 +169,16 @@ defmodule WandererKills.Application do
   defp maybe_redisq(children) do
     if Config.start_redisq?() do
       children ++ [WandererKills.Ingest.RedisQ]
+    else
+      children
+    end
+  end
+
+  defp maybe_historical_streaming(children) do
+    config = Application.get_env(:wanderer_kills, :historical_streaming, [])
+
+    if Keyword.get(config, :enabled, false) do
+      children ++ [WandererKills.Ingest.Historical.HistoricalStreamer]
     else
       children
     end

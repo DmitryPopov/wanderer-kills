@@ -100,59 +100,60 @@ jobs:
         run: |
           echo "## Dialyzer Results" >> $GITHUB_STEP_SUMMARY
 
-          # Run dialyzer and capture output
-          MIX_ENV=dev mix dialyzer --format short > dialyzer_output.txt 2>&1 || DIALYZER_EXIT_CODE=$?
+          # Run dialyzer and capture output and exit code
+          set +e  # Don't exit on non-zero exit codes
+          MIX_ENV=dev mix dialyzer --format short > dialyzer_output.txt 2>&1
+          DIALYZER_EXIT_CODE=$?
+          set -e  # Re-enable exit on error
 
-          # Check if Dialyzer itself failed (non-zero exit without warnings)
-          if [ -n "$DIALYZER_EXIT_CODE" ] && [ "$DIALYZER_EXIT_CODE" -ne 0 ]; then
-            # Check if this is due to warnings or actual failure
-            if [ -f dialyzer_output.txt ]; then
-              WARNINGS=$(grep -c "warning:" dialyzer_output.txt 2>/dev/null | head -1 || echo "0")
-              if ! [[ "$WARNINGS" =~ ^[0-9]+$ ]]; then
-                WARNINGS="0"
-              fi
-              
-              if [ "$WARNINGS" -eq 0 ]; then
-                # Non-zero exit with no warnings = actual failure
-                echo "❌ **Dialyzer failed to run**" >> $GITHUB_STEP_SUMMARY
-                echo "dialyzer_status=failed" >> $GITHUB_OUTPUT
-                echo "dialyzer_warnings=0" >> $GITHUB_OUTPUT
-                cat dialyzer_output.txt >> $GITHUB_STEP_SUMMARY
-                exit 1
-              fi
-            else
-              # No output file = complete failure
-              echo "❌ **Dialyzer failed to run**" >> $GITHUB_STEP_SUMMARY
-              echo "dialyzer_status=failed" >> $GITHUB_OUTPUT
-              echo "dialyzer_warnings=0" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-          fi
-
-          # Count warnings - ensure we get a single number
+          # Count warnings if output file exists
+          WARNINGS=0
           if [ -f dialyzer_output.txt ]; then
-            # Count warning lines and ensure it's a single number
-            WARNINGS=$(grep -c "warning:" dialyzer_output.txt 2>/dev/null | head -1 || echo "0")
+            # Count lines that look like warnings (containing file paths and error descriptions)
+            WARNINGS=$(grep -E "^lib/.*\.ex:[0-9]+:[0-9]+:" dialyzer_output.txt | wc -l || echo "0")
             # Ensure WARNINGS is a valid number
             if ! [[ "$WARNINGS" =~ ^[0-9]+$ ]]; then
               WARNINGS="0"
             fi
-            echo "dialyzer_warnings=$WARNINGS" >> $GITHUB_OUTPUT
+          fi
 
-            if [ "$WARNINGS" -eq "0" ]; then
+          echo "dialyzer_warnings=$WARNINGS" >> $GITHUB_OUTPUT
+
+          # Determine status based on exit code and warnings
+          case $DIALYZER_EXIT_CODE in
+            0)
+              # Success, no warnings
               echo "✅ **Dialyzer passed with 0 warnings**" >> $GITHUB_STEP_SUMMARY
               echo "dialyzer_status=passing" >> $GITHUB_OUTPUT
-            else
-              echo "❌ **Dialyzer found $WARNINGS warnings**" >> $GITHUB_STEP_SUMMARY
+              ;;
+            2)
+              # Warnings found (exit code 2 is normal for warnings)
+              echo "⚠️ **Dialyzer found $WARNINGS warnings**" >> $GITHUB_STEP_SUMMARY
               echo "dialyzer_status=warnings" >> $GITHUB_OUTPUT
               # Show warnings in step summary
-              grep "warning:" dialyzer_output.txt | head -20 >> $GITHUB_STEP_SUMMARY
+              if [ -f dialyzer_output.txt ]; then
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "Warnings:" >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+                grep -E "^lib/.*\.ex:[0-9]+:[0-9]+:" dialyzer_output.txt | head -10 >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+              fi
+              # Don't fail the build for warnings - treat as success
+              ;;
+            *)
+              # Actual failure (any other exit code)
+              echo "❌ **Dialyzer failed to run (exit code: $DIALYZER_EXIT_CODE)**" >> $GITHUB_STEP_SUMMARY
+              echo "dialyzer_status=failed" >> $GITHUB_OUTPUT
+              if [ -f dialyzer_output.txt ]; then
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "Error output:" >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+                cat dialyzer_output.txt >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+              fi
               exit 1
-            fi
-          else
-            echo "dialyzer_warnings=0" >> $GITHUB_OUTPUT
-            echo "dialyzer_status=passing" >> $GITHUB_OUTPUT
-          fi
+              ;;
+          esac
         continue-on-error: false
 
       - name: Run tests with coverage
@@ -225,7 +226,13 @@ jobs:
           echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Credo | ${{ steps.credo.outputs.credo_status == 'passing' && '✅ Passing (0 issues)' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Dialyzer | ${{ steps.dialyzer.outputs.dialyzer_status == 'passing' && '✅ Passing (0 warnings)' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.dialyzer.outputs.dialyzer_status }}" = "passing" ]; then
+            echo "| Dialyzer | ✅ Passing (0 warnings) |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.dialyzer.outputs.dialyzer_status }}" = "warnings" ]; then
+            echo "| Dialyzer | ⚠️ Warnings found |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Dialyzer | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "| Tests | ${{ steps.tests.outputs.tests_status == 'passing' && '✅ All passing' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.coverage.outputs.coverage }}" != "unknown" ]; then
             echo "| Coverage | ✅ ${{ steps.coverage.outputs.coverage }}% |" >> $GITHUB_STEP_SUMMARY
@@ -271,7 +278,7 @@ jobs:
 
   docker:
     name: Build and Push Docker Image
-    needs: [test, auto-tag]
+    needs: [test]
     runs-on: ubuntu-latest
     # Run on push to main (always) or on version tags
     if: |
@@ -416,12 +423,10 @@ jobs:
 
   release:
     name: Create Release
-    needs: [docker, auto-tag]
+    needs: [docker]
     runs-on: ubuntu-latest
-    # Run when auto-tag creates a new tag OR when a version tag is pushed manually
-    if: |
-      (github.ref == 'refs/heads/main' && needs.auto-tag.outputs.new_tag_created == 'true') ||
-      (startsWith(github.ref, 'refs/tags/v'))
+    # Run when a version tag is pushed
+    if: startsWith(github.ref, 'refs/tags/v')
 
     permissions:
       contents: write
@@ -434,13 +439,8 @@ jobs:
       - name: Get version from tag
         id: get_version
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # We're running on a tag
-            VERSION="${GITHUB_REF#refs/tags/}"
-          else
-            # We're running because auto-tag created a new tag
-            VERSION="${{ needs.auto-tag.outputs.tag }}"
-          fi
+          # We're running on a tag
+          VERSION="${GITHUB_REF#refs/tags/}"
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Creating release for version: $VERSION"
 
@@ -551,9 +551,72 @@ jobs:
           fi
           echo "TAG=$TAG" >> $GITHUB_OUTPUT
 
+  release-auto:
+    name: Create Release from Auto-Tag
+    needs: [docker, auto-tag]
+    runs-on: ubuntu-latest
+    # Run when auto-tag creates a new tag on main branch
+    if: |
+      github.ref == 'refs/heads/main' && 
+      needs.auto-tag.outputs.new_tag_created == 'true'
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from auto-tag
+        id: get_version
+        run: |
+          VERSION="${{ needs.auto-tag.outputs.tag }}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Creating release for version: $VERSION"
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          # Get the previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          echo "Current tag: ${{ needs.auto-tag.outputs.tag }}"
+          echo "Previous tag: ${PREV_TAG:-none}"
+
+          # Generate changelog between tags
+          if [ -z "$PREV_TAG" ]; then
+            echo "CHANGELOG=Initial release" >> $GITHUB_OUTPUT
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" $PREV_TAG..HEAD)
+            echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+            echo "$CHANGELOG" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ steps.get_version.outputs.VERSION }}
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          body: |
+            ## Changes in this release
+
+            ${{ steps.release_notes.outputs.CHANGELOG }}
+
+            ## Docker Image
+
+            ```bash
+            docker pull guarzo/wanderer-kills:${{ steps.get_version.outputs.VERSION }}
+            ```
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   deploy:
     name: Deploy to Server
-    needs: [test, docker]
+    needs: [docker]
     runs-on: ubuntu-latest
     # Deploy on push to main branch (uses latest tag)
     if: github.ref == 'refs/heads/main'

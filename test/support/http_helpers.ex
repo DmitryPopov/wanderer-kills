@@ -28,8 +28,16 @@ defmodule WandererKills.Test.HttpHelpers do
   """
   @spec setup_http_mocks() :: :ok
   def setup_http_mocks do
+    # Configure the application to use the mock HTTP client
+    Application.put_env(:wanderer_kills, :http, client: WandererKills.Ingest.Http.Client.Mock)
+
     # Set up fallback expectations for tests that don't specify their own
     Mox.stub(WandererKills.Ingest.Http.Client.Mock, :get_with_rate_limit, fn _url, _opts ->
+      {:error, :not_found}
+    end)
+
+    # Set up fallback for POST requests (used by webhooks)
+    Mox.stub(WandererKills.Ingest.Http.Client.Mock, :post, fn _url, _body, _opts ->
       {:error, :not_found}
     end)
 

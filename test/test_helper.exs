@@ -1,9 +1,7 @@
-# Start ExUnit first
 ExUnit.start()
 
-# Ensure Mox is available
-Code.ensure_loaded?(Mox) ||
-  raise "Mox module not available. Run: mix deps.get && mix deps.compile"
+# Standard Mox setup
+Application.ensure_all_started(:mox)
 
 # Define mocks
 Mox.defmock(WandererKills.Ingest.Http.Client.Mock,
@@ -14,8 +12,9 @@ Mox.defmock(WandererKills.Ingest.Killmails.ZkbClient.Mock,
   for: WandererKills.Ingest.Killmails.ZkbClientBehaviour
 )
 
-# Mock for ESI client
 Mox.defmock(EsiClientMock, for: WandererKills.Ingest.ESI.ClientBehaviour)
+
+# Remove the incorrect stub_with line
 
 # Start the application for testing
 {:ok, _} = Application.ensure_all_started(:wanderer_kills)

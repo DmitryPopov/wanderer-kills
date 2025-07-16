@@ -12,6 +12,7 @@ A high-performance, real-time EVE Online killmail data service built with Elixir
 ## Features
 
 - **Real-time Data** - Continuous killmail stream from zKillboard RedisQ
+- **Historical Streaming** - Process historical killmail data with full ESI enrichment and rate limiting
 - **Multiple Integration Methods** - REST API, WebSocket channels, Server-Sent Events (SSE), and Phoenix PubSub
 - **Character-Based Subscriptions** - Subscribe to killmails by character IDs (victims or attackers)
 - **System-Based Subscriptions** - Traditional solar system ID filtering
@@ -21,7 +22,7 @@ A high-performance, real-time EVE Online killmail data service built with Elixir
 - **ESI Enrichment** - Automatic enrichment with character, corporation, and ship names
 - **Batch Processing** - Efficient bulk operations for multiple systems and characters
 - **Event Streaming** - Optional event-driven architecture with offset tracking
-- **Comprehensive Monitoring** - 5-minute status reports with system-wide metrics
+- **Comprehensive Monitoring** - 5-minute status reports with system-wide metrics and dashboard interface
 
 ## Quick Start
 
@@ -95,6 +96,32 @@ WandererKills can be configured using the following environment variables:
 | `MEMORY_THRESHOLD_MB` | Memory usage threshold (MB) before warning | `1000` |
 | `EMERGENCY_MEMORY_THRESHOLD_MB` | Memory usage threshold (MB) for emergency cleanup | `1500` |
 
+#### Historical Streaming Configuration
+
+WandererKills supports streaming historical killmail data from zKillboard's archive. This feature allows you to process historical kills through the same pipeline as real-time data, ensuring consistent formatting and ESI enrichment.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `HISTORICAL_STREAMING_ENABLED` | Enable historical streaming functionality | `false` |
+| `HISTORICAL_START_DATE` | Start date for historical streaming (YYYYMMDD format) | `20240101` |
+| `HISTORICAL_DAILY_LIMIT` | Maximum kills to process per day (0 = no limit) | `5000` |
+| `HISTORICAL_BATCH_SIZE` | Number of kills to process in each batch | `50` |
+| `HISTORICAL_BATCH_INTERVAL_MS` | Delay between batches in milliseconds | `10000` |
+
+**Historical Streaming Features:**
+- ✅ **Full ESI Enrichment** - Historical kills receive complete character, corporation, and ship data
+- ✅ **Rate-Limited Processing** - Respects zKillboard API limits and system resources
+- ✅ **Resumable Operation** - Can pause/resume and tracks progress across restarts
+- ✅ **Dashboard Integration** - Real-time monitoring via the `/dashboard` endpoint
+- ✅ **Identical Format** - Historical kills appear identical to real-time kills in all APIs
+
+**Configuration Notes:**
+- Historical streaming is disabled by default to prevent unexpected API usage
+- The `HISTORICAL_START_DATE` should be in YYYYMMDD format (e.g., `20240315` for March 15, 2024)
+- Daily limits prevent overwhelming the system - typical values are 1000-10000 kills per day
+- Batch processing allows fine-tuning between processing speed and system load
+- Historical data is processed at a lower priority than real-time data
+
 #### Example Usage
 
 ```bash
@@ -111,6 +138,24 @@ docker run -p 4004:4004 \
   -e EMERGENCY_MEMORY_THRESHOLD_MB=3000 \
   guarzo/wanderer-kills
 
+# Docker with historical streaming enabled
+docker run -p 4004:4004 \
+  -e HOST=yourdomain.com \
+  -e SCHEME=https \
+  -e URL_PORT=443 \
+  -e PORT=4004 \
+  -e ORIGIN_HOST=https://yourdomain.com \
+  -e MIX_ENV=prod \
+  -e KILLMAIL_RETENTION_DAYS=7 \
+  -e MEMORY_THRESHOLD_MB=2000 \
+  -e EMERGENCY_MEMORY_THRESHOLD_MB=3000 \
+  -e HISTORICAL_STREAMING_ENABLED=true \
+  -e HISTORICAL_START_DATE=20240101 \
+  -e HISTORICAL_DAILY_LIMIT=5000 \
+  -e HISTORICAL_BATCH_SIZE=50 \
+  -e HISTORICAL_BATCH_INTERVAL_MS=10000 \
+  guarzo/wanderer-kills
+
 # Local development
 export HOST=localhost
 export SCHEME=http
@@ -118,6 +163,20 @@ export URL_PORT=4004
 export PORT=4004
 export KILLMAIL_RETENTION_DAYS=7
 export MEMORY_THRESHOLD_MB=2000
+mix phx.server
+
+# Local development with historical streaming
+export HOST=localhost
+export SCHEME=http
+export URL_PORT=4004
+export PORT=4004
+export KILLMAIL_RETENTION_DAYS=7
+export MEMORY_THRESHOLD_MB=2000
+export HISTORICAL_STREAMING_ENABLED=true
+export HISTORICAL_START_DATE=20240101
+export HISTORICAL_DAILY_LIMIT=2000
+export HISTORICAL_BATCH_SIZE=25
+export HISTORICAL_BATCH_INTERVAL_MS=15000
 mix phx.server
 ```
 
@@ -130,6 +189,42 @@ The `KILLMAIL_RETENTION_DAYS` variable controls how long killmail data is stored
 The memory threshold variables control when the system triggers cleanup operations:
 - `MEMORY_THRESHOLD_MB`: When exceeded, the system logs warnings about memory usage
 - `EMERGENCY_MEMORY_THRESHOLD_MB`: When exceeded, the system performs emergency cleanup of old data
+
+### Historical Streaming Monitoring
+
+When historical streaming is enabled, you can monitor its progress through several methods:
+
+#### Dashboard Interface
+Visit `http://localhost:4004/dashboard` to view real-time statistics including:
+- **Historical Progress** - Shows completion percentage and current processing date
+- **Historical Streaming** health card - Displays detailed metrics:
+  - Processing status (Running/Paused/Disabled/Error)
+  - Current date being processed
+  - Total processed and failed kill counts
+  - Current queue size and progress percentage
+
+#### Log Monitoring
+The application logs provide detailed information about historical streaming:
+```bash
+# View historical streaming logs
+docker logs -f <container_id> | grep -i historical
+
+# Example log entries
+[info] Starting historical streamer
+[info] Fetching historical kills date: ~D[2024-01-01]
+[info] Received daily kill list date: ~D[2024-01-01] count: 15420
+[debug] Processing historical batch size: 50 remaining: 15370
+```
+
+#### API Endpoints
+Historical streaming metrics are included in the status endpoint:
+```bash
+# Get current status including historical streaming
+curl http://localhost:4004/status
+
+# Health check includes historical streaming status
+curl http://localhost:4004/health
+```
 
 ## API Overview
 

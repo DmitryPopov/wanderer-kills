@@ -12,6 +12,11 @@ defmodule WandererKills.Subs.Subscriptions.WebhookNotifier do
 
   @webhook_timeout 10_000
 
+  # Get the configured HTTP client implementation
+  defp http_client do
+    Application.get_env(:wanderer_kills, :http, [])[:client] || Client
+  end
+
   @doc """
   Sends a killmail update notification to a webhook URL.
 
@@ -153,7 +158,7 @@ defmodule WandererKills.Subs.Subscriptions.WebhookNotifier do
       {"User-Agent", "WandererKills/1.0"}
     ]
 
-    Client.post(url, payload, headers: headers, timeout: @webhook_timeout)
+    http_client().post(url, payload, headers: headers, timeout: @webhook_timeout)
   end
 
   defp validate_webhook_url(nil), do: {:error, :missing_url}

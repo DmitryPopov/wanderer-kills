@@ -5,6 +5,13 @@ defmodule WandererKills.Subs.Subscriptions.WebhookNotifierTest do
   alias WandererKills.Subs.Subscriptions.WebhookNotifier
 
   setup do
+    # Configure HTTP client to use mock
+    Application.put_env(:wanderer_kills, :http, client: WandererKills.Ingest.Http.Client.Mock)
+
+    on_exit(fn ->
+      Application.delete_env(:wanderer_kills, :http)
+    end)
+
     subscription = %{
       "id" => "sub_123",
       "callback_url" => "https://example.com/webhook",
