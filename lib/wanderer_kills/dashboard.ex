@@ -392,7 +392,7 @@ defmodule WandererKills.Dashboard do
   defp get_historical_streaming_stats do
     config = Application.get_env(:wanderer_kills, :historical_streaming, %{})
 
-    if Map.get(config, :enabled, false) do
+    if Keyword.get(config, :enabled, false) do
       get_enabled_streaming_stats(config)
     else
       format_disabled_streaming_stats()
@@ -451,7 +451,7 @@ defmodule WandererKills.Dashboard do
       processed_count: status.processed_count,
       failed_count: status.failed_count,
       queue_size: status.queue_size,
-      start_date: Map.get(config, :start_date, "unknown"),
+      start_date: Keyword.get(config, :start_date, "unknown"),
       end_date: status.end_date
     }
   end

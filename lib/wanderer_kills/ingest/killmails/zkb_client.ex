@@ -328,9 +328,10 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
     request_opts = Keyword.put(request_opts, :operation, operation_atom)
 
     # Make request using injected HTTP client
-    with {:ok, response} <- http_client().get_with_rate_limit(url, request_opts) do
-      Client.parse_json_response(response)
-    else
+    case http_client().get_with_rate_limit(url, request_opts) do
+      {:ok, response} ->
+        Client.parse_json_response(response)
+
       {:error, %Error{type: :rate_limit} = error} ->
         Logger.warning("Rate limit exceeded for zkillboard",
           entity_type: entity_type,
