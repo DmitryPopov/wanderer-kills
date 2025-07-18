@@ -322,6 +322,24 @@ defmodule WandererKills.Ingest.Killmails.Transformations do
 
   # Adds a flat field by extracting value from nested path
   defp add_flat_field(data, field_name, path) when is_map(data) do
+    if valid_path_value?(data, path) do
+      extract_and_add_field(data, field_name, path)
+    else
+      data
+    end
+  end
+
+  # Check if the path contains valid values (not error tuples)
+  defp valid_path_value?(data, [key | _rest]) do
+    case Map.get(data, key) do
+      {:error, _} -> false
+      nil -> false
+      value -> is_map(value)
+    end
+  end
+
+  # Extract value from path and add to data
+  defp extract_and_add_field(data, field_name, path) do
     case get_in(data, path) do
       nil -> data
       value -> Map.put(data, field_name, value)

@@ -68,13 +68,32 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
   rescue
     error ->
       formatted_error = Exception.format(:error, error, __STACKTRACE__)
-      Logger.error(error_message, Map.put(metadata, :error, formatted_error))
-      {:error, %{type: :enrichment_error, reason: formatted_error}}
+
+      Logger.error(
+        "#{error_message}: #{inspect(error)}",
+        Map.merge(metadata, %{
+          error: formatted_error,
+          exception: inspect(error),
+          stacktrace: Exception.format_stacktrace(__STACKTRACE__)
+        })
+      )
+
+      {:error, %{type: :enrichment_error, reason: formatted_error, details: inspect(error)}}
   catch
     kind, reason ->
       formatted_error = Exception.format(kind, reason, __STACKTRACE__)
-      Logger.error(error_message, Map.put(metadata, :error, formatted_error))
-      {:error, %{type: :enrichment_error, reason: formatted_error}}
+
+      Logger.error(
+        "#{error_message} (caught): #{inspect(reason)}",
+        Map.merge(metadata, %{
+          error: formatted_error,
+          kind: kind,
+          reason: inspect(reason),
+          stacktrace: Exception.format_stacktrace(__STACKTRACE__)
+        })
+      )
+
+      {:error, %{type: :enrichment_error, reason: formatted_error, details: inspect(reason)}}
   end
 
   @doc """
@@ -206,7 +225,12 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
         Cache.put(:characters, id, data)
         {:ok, data}
 
-      error ->
+      {:error, reason} = error ->
+        Logger.warning("Failed to fetch character #{id}: #{inspect(reason)}",
+          character_id: id,
+          error: inspect(reason)
+        )
+
         error
     end
   end
@@ -217,7 +241,12 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
         Cache.put(:corporations, id, data)
         {:ok, data}
 
-      error ->
+      {:error, reason} = error ->
+        Logger.warning("Failed to fetch corporation #{id}: #{inspect(reason)}",
+          corporation_id: id,
+          error: inspect(reason)
+        )
+
         error
     end
   end
@@ -228,7 +257,12 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
         Cache.put(:alliances, id, data)
         {:ok, data}
 
-      error ->
+      {:error, reason} = error ->
+        Logger.warning("Failed to fetch alliance #{id}: #{inspect(reason)}",
+          alliance_id: id,
+          error: inspect(reason)
+        )
+
         error
     end
   end
@@ -239,7 +273,12 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
         Cache.put(:ship_types, id, data)
         {:ok, data}
 
-      error ->
+      {:error, reason} = error ->
+        Logger.warning("Failed to fetch ship type #{id}: #{inspect(reason)}",
+          ship_type_id: id,
+          error: inspect(reason)
+        )
+
         error
     end
   end
@@ -250,7 +289,12 @@ defmodule WandererKills.Ingest.Killmails.Enrichment.BatchEnricher do
         Cache.put(:systems, id, data)
         {:ok, data}
 
-      error ->
+      {:error, reason} = error ->
+        Logger.warning("Failed to fetch system #{id}: #{inspect(reason)}",
+          system_id: id,
+          error: inspect(reason)
+        )
+
         error
     end
   end

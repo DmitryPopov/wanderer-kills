@@ -280,9 +280,11 @@ defmodule WandererKills.Ingest.Killmails.UnifiedProcessor do
             enriched
 
           {:error, reason} ->
-            Logger.error("Failed to enrich killmails batch",
-              error: reason,
-              batch_size: length(validated_killmails)
+            Logger.error("Failed to enrich killmails batch: #{inspect(reason)}",
+              error: inspect(reason),
+              batch_size: length(validated_killmails),
+              sample_killmail_ids:
+                validated_killmails |> Enum.take(5) |> Enum.map(&Map.get(&1, "killmail_id"))
             )
 
             # Fall back to unenriched killmails
