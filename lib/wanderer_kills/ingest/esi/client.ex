@@ -307,7 +307,50 @@ defmodule WandererKills.Ingest.ESI.Client do
 
   # Common HTTP response handler that reduces code duplication
   defp handle_http_response({:ok, response}, {entity_type, entity_id}, success_handler) do
-    success_handler.(entity_type, entity_id, response)
+    # Validate response body is a map before parsing
+    case response do
+      %{body: body} when is_map(body) ->
+        success_handler.(entity_type, entity_id, response)
+
+      %{body: ""} ->
+        Logger.error("Received empty response body from ESI",
+          entity_type: entity_type,
+          entity_id: entity_id
+        )
+
+        {:error,
+         Error.esi_error(:empty_response, "Empty response body from ESI", true, %{
+           entity_type: entity_type,
+           entity_id: entity_id
+         })}
+
+      %{body: body} ->
+        Logger.error("Received invalid response body type from ESI",
+          entity_type: entity_type,
+          entity_id: entity_id,
+          body_type: inspect(body)
+        )
+
+        {:error,
+         Error.esi_error(:invalid_response, "Invalid response body type from ESI", false, %{
+           entity_type: entity_type,
+           entity_id: entity_id,
+           body_type: inspect(body)
+         })}
+
+      _ ->
+        Logger.error("Received malformed response from ESI",
+          entity_type: entity_type,
+          entity_id: entity_id,
+          response: inspect(response)
+        )
+
+        {:error,
+         Error.esi_error(:malformed_response, "Malformed response from ESI", false, %{
+           entity_type: entity_type,
+           entity_id: entity_id
+         })}
+    end
   end
 
   defp handle_http_response({:error, reason}, {entity_type, entity_id}, _success_handler) do
@@ -327,7 +370,50 @@ defmodule WandererKills.Ingest.ESI.Client do
 
   # Specific handler for killmail responses with detailed error handling
   defp handle_killmail_response({:ok, response}, killmail_id, killmail_hash) do
-    parse_killmail_response(killmail_id, killmail_hash, response)
+    # Validate response body is a map before parsing
+    case response do
+      %{body: body} when is_map(body) ->
+        parse_killmail_response(killmail_id, killmail_hash, response)
+
+      %{body: ""} ->
+        Logger.error("Received empty response body from ESI for killmail",
+          killmail_id: killmail_id,
+          killmail_hash: String.slice(killmail_hash, 0, 8) <> "..."
+        )
+
+        {:error,
+         Error.esi_error(:empty_response, "Empty response body from ESI", true, %{
+           killmail_id: killmail_id,
+           killmail_hash: killmail_hash
+         })}
+
+      %{body: body} ->
+        Logger.error("Received invalid response body type from ESI for killmail",
+          killmail_id: killmail_id,
+          killmail_hash: String.slice(killmail_hash, 0, 8) <> "...",
+          body_type: inspect(body)
+        )
+
+        {:error,
+         Error.esi_error(:invalid_response, "Invalid response body type from ESI", false, %{
+           killmail_id: killmail_id,
+           killmail_hash: killmail_hash,
+           body_type: inspect(body)
+         })}
+
+      _ ->
+        Logger.error("Received malformed response from ESI for killmail",
+          killmail_id: killmail_id,
+          killmail_hash: String.slice(killmail_hash, 0, 8) <> "...",
+          response: inspect(response)
+        )
+
+        {:error,
+         Error.esi_error(:malformed_response, "Malformed response from ESI", false, %{
+           killmail_id: killmail_id,
+           killmail_hash: killmail_hash
+         })}
+    end
   end
 
   defp handle_killmail_response({:error, %{status: 404}}, killmail_id, killmail_hash) do
