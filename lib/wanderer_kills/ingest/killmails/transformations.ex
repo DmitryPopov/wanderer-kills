@@ -420,6 +420,8 @@ defmodule WandererKills.Ingest.Killmails.Transformations do
   end
 
   # Extract ship name from ship data, handling both atom and string keys
+  defp extract_ship_name({:error, _reason} = error), do: error
+
   defp extract_ship_name(ship_data) when is_map(ship_data) do
     case Map.get(ship_data, :name) || Map.get(ship_data, "name") do
       name when is_binary(name) ->
@@ -428,6 +430,10 @@ defmodule WandererKills.Ingest.Killmails.Transformations do
       _ ->
         {:error, Error.ship_types_error(:invalid_ship_data, "Ship data missing name field")}
     end
+  end
+
+  defp extract_ship_name(_invalid_data) do
+    {:error, Error.ship_types_error(:invalid_ship_data, "Invalid ship data format")}
   end
 
   # Fallback to ESI if not found in cache
