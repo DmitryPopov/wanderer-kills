@@ -1,18 +1,17 @@
 defmodule WandererKills.Core.Observability.Metrics do
   @moduledoc """
-  Unified metrics collection and management for WandererKills.
+  Consolidated metrics collection and management for WandererKills.
 
   This module consolidates all metric collection, aggregation, and reporting
-  functionality that was previously scattered across the codebase. It provides
-  a single interface for:
+  functionality from api_tracker.ex, websocket_stats.ex, statistics.ex, and
+  the original metrics.ex. It provides a unified interface for:
 
-  - HTTP request metrics
+  - API request tracking (zkillboard, ESI)
+  - WebSocket connection and subscription metrics
   - Cache operation metrics
   - Killmail processing metrics
-  - WebSocket connection metrics
   - System resource metrics
-  - ESI API metrics
-  - ZKillboard metrics
+  - Statistical calculations and aggregations
 
   All metrics are emitted as telemetry events for easy integration with
   monitoring tools like Prometheus, StatsD, or custom reporters.
@@ -20,14 +19,15 @@ defmodule WandererKills.Core.Observability.Metrics do
   ## Usage
 
   ```elixir
-  # Record a successful HTTP request
-  Metrics.record_http_request(:zkb, :get, 200, 45.5)
+  # API tracking
+  Metrics.track_api_request(:zkillboard, endpoint: "/api/kills/", duration_ms: 45, status_code: 200)
 
-  # Record cache operation
+  # WebSocket events
+  Metrics.track_websocket_connection(:connected)
+  Metrics.increment_kills_sent(:realtime, 5)
+
+  # Cache operations
   Metrics.record_cache_operation(:wanderer_cache, :hit)
-
-  # Record killmail processing
-  Metrics.record_killmail_processed(:stored, 123456)
 
   # Get current metrics
   {:ok, metrics} = Metrics.get_all_metrics()
@@ -37,24 +37,16 @@ defmodule WandererKills.Core.Observability.Metrics do
   use GenServer
   require Logger
 
-  alias WandererKills.Core.Observability.{Statistics, Telemetry}
-  alias WandererKills.Core.Support.Clock
+  alias WandererKills.Core.EtsOwner
+  alias WandererKills.Core.Observability.Telemetry
+  alias WandererKills.Core.Support.Utils
 
   # Metric types
   @type metric_name :: atom()
   @type metric_value :: number() | map()
   @type metric_metadata :: map()
-
-  # Service names
-  @type service :: :esi | :zkb | :http | :cache | :killmail | :websocket | :system
-
-  # Operation results
-  @type operation_result :: :success | :failure | :timeout | :error
-
-  # Cache operations
+  @type service :: :zkillboard | :esi
   @type cache_operation :: :hit | :miss | :put | :eviction | :expired
-
-  # Killmail processing results
   @type killmail_result :: :stored | :skipped | :failed | :enriched | :validated
 
   @type state :: %{
@@ -62,23 +54,150 @@ defmodule WandererKills.Core.Observability.Metrics do
           metrics: map(),
           counters: map(),
           gauges: map(),
-          histograms: map()
+          histograms: map(),
+          # API tracking state (from api_tracker.ex)
+          api_metrics: map(),
+          # WebSocket state (from websocket_stats.ex)
+          websocket_stats: map()
         }
 
   # Configuration
-  @metric_atoms_table :metric_atoms_table
-  @max_metric_atoms 10_000
+  @table_name :consolidated_metrics
+  @window_size_ms :timer.minutes(5)
+  @cleanup_interval_ms :timer.minutes(1)
+  @stats_summary_interval :timer.minutes(5)
+  @health_check_interval :timer.minutes(1)
+  @max_metric_atoms 1000
+
+  # API services we track
+  @services [:zkillboard, :esi]
+
+  # Allowed metric patterns to prevent atom table exhaustion
+  @metric_patterns [
+    # HTTP metrics
+    ~r/^http_(zkillboard|esi)_requests$/,
+    ~r/^http_(zkillboard|esi)_(get|post|put|delete)$/,
+    ~r/^http_(zkillboard|esi)_status_[1-5]xx$/,
+    ~r/^http_(zkillboard|esi)_duration_ms$/,
+    # Cache metrics
+    ~r/^cache\.[a-zA-Z_]+\.(hit|miss|put|eviction|expired|total)$/,
+    # Killmail metrics
+    ~r/^killmail\.(stored|skipped|failed|enriched|validated)$/,
+    # System metrics
+    ~r/^system\.[a-zA-Z_]+$/,
+    # Rate metrics
+    ~r/^[a-zA-Z_]+_per_second$/
+  ]
 
   # ============================================================================
   # Client API
   # ============================================================================
 
   @doc """
-  Starts the metrics GenServer.
+  Starts the consolidated metrics GenServer.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  # ============================================================================
+  # API Tracking Functions (from api_tracker.ex)
+  # ============================================================================
+
+  @doc """
+  Records an API request.
+  """
+  @spec track_api_request(service(), keyword()) :: :ok
+  def track_api_request(service, opts) when service in @services do
+    metric = %{
+      timestamp: System.monotonic_time(:millisecond),
+      service: service,
+      endpoint: Keyword.get(opts, :endpoint),
+      duration_ms: Keyword.get(opts, :duration_ms, 0),
+      status_code: Keyword.get(opts, :status_code),
+      error: Keyword.get(opts, :error, false)
+    }
+
+    GenServer.cast(__MODULE__, {:track_api_request, metric})
+  end
+
+  @doc """
+  Gets current API statistics for all services.
+  """
+  @spec get_api_stats() :: map()
+  def get_api_stats do
+    GenServer.call(__MODULE__, :get_api_stats)
+  end
+
+  @doc """
+  Gets statistics for a specific API service.
+  """
+  @spec get_api_service_stats(service()) :: map()
+  def get_api_service_stats(service) when service in @services do
+    GenServer.call(__MODULE__, {:get_api_service_stats, service})
+  end
+
+  # ============================================================================
+  # WebSocket Functions (from websocket_stats.ex)
+  # ============================================================================
+
+  @doc """
+  Increments the count of kills sent to WebSocket clients.
+  """
+  @spec increment_kills_sent(:realtime | :preload, pos_integer()) :: :ok
+  def increment_kills_sent(type, count \\ 1)
+      when type in [:realtime, :preload] and is_integer(count) and count > 0 do
+    Telemetry.websocket_kills_sent(type, count)
+    GenServer.cast(__MODULE__, {:increment_kills_sent, type, count})
+  end
+
+  @doc """
+  Tracks WebSocket connection events.
+  """
+  @spec track_websocket_connection(:connected | :disconnected, map()) :: :ok
+  def track_websocket_connection(event, metadata \\ %{})
+      when event in [:connected, :disconnected] do
+    Telemetry.websocket_connection(event, metadata)
+    GenServer.cast(__MODULE__, {:track_websocket_connection, event, metadata})
+  end
+
+  @doc """
+  Tracks WebSocket subscription changes.
+  """
+  @spec track_websocket_subscription(:added | :updated | :removed, non_neg_integer(), map()) ::
+          :ok
+  def track_websocket_subscription(event, system_count, metadata \\ %{})
+      when event in [:added, :updated, :removed] and is_integer(system_count) do
+    character_count = Map.get(metadata, :character_count, 0)
+    subscription_id = Map.get(metadata, :subscription_id, "unknown")
+
+    Telemetry.websocket_subscription(
+      event,
+      subscription_id,
+      Map.put(metadata, :system_count, system_count)
+    )
+
+    GenServer.cast(
+      __MODULE__,
+      {:track_websocket_subscription, event, system_count, character_count, metadata}
+    )
+  end
+
+  @doc """
+  Gets current WebSocket statistics.
+  """
+  @spec get_websocket_stats() :: {:ok, map()} | {:error, term()}
+  def get_websocket_stats do
+    GenServer.call(__MODULE__, :get_websocket_stats)
+  end
+
+  @doc """
+  Resets WebSocket statistics counters.
+  """
+  @spec reset_websocket_stats() :: :ok
+  def reset_websocket_stats do
+    GenServer.call(__MODULE__, :reset_websocket_stats)
   end
 
   @doc """
@@ -91,7 +210,7 @@ defmodule WandererKills.Core.Observability.Metrics do
   - `duration_ms` - Request duration in milliseconds
   - `metadata` - Additional metadata
   """
-  @spec record_http_request(service(), atom(), integer(), number(), map()) :: :ok
+  @spec record_http_request(atom(), atom(), integer(), number(), map()) :: :ok
   def record_http_request(service, method, status_code, duration_ms, metadata \\ %{}) do
     GenServer.cast(
       __MODULE__,
@@ -136,6 +255,59 @@ defmodule WandererKills.Core.Observability.Metrics do
   @spec record_websocket_event(atom(), number(), map()) :: :ok
   def record_websocket_event(event, value, metadata \\ %{}) do
     GenServer.cast(__MODULE__, {:record_websocket, event, value, metadata})
+  end
+
+  # ============================================================================
+  # Statistical Functions (from statistics.ex)
+  # ============================================================================
+
+  @doc """
+  Calculates a rate per specified time period.
+  """
+  @spec calculate_rate(non_neg_integer(), number(), keyword()) :: float()
+  def calculate_rate(count, duration_seconds, opts \\ [])
+      when is_integer(count) and is_number(duration_seconds) and duration_seconds > 0 do
+    period = Keyword.get(opts, :period, :minute)
+    precision = Keyword.get(opts, :precision, 2)
+
+    period_multiplier =
+      case period do
+        :second -> 1
+        :minute -> 60
+        :hour -> 3600
+        :day -> 86_400
+      end
+
+    rate = count * period_multiplier / duration_seconds
+    Float.round(rate, precision)
+  end
+
+  @doc """
+  Calculates a percentage with proper handling of edge cases.
+  """
+  @spec calculate_percentage(number(), number(), non_neg_integer()) :: float()
+  def calculate_percentage(numerator, denominator, precision \\ 2)
+      when is_number(numerator) and is_number(denominator) do
+    case denominator do
+      0 -> 0.0
+      _ -> Float.round(numerator / denominator * 100, precision)
+    end
+  end
+
+  @doc """
+  Calculates hit rate percentage from hits and total operations.
+  """
+  @spec calculate_hit_rate(non_neg_integer(), non_neg_integer()) :: float()
+  def calculate_hit_rate(hits, total) do
+    calculate_percentage(hits, total)
+  end
+
+  @doc """
+  Calculates success rate from successful and total operations.
+  """
+  @spec calculate_success_rate(non_neg_integer(), non_neg_integer()) :: float()
+  def calculate_success_rate(successful, total) do
+    calculate_percentage(successful, total)
   end
 
   @doc """
@@ -231,12 +403,12 @@ defmodule WandererKills.Core.Observability.Metrics do
   def record_success(service, operation) do
     case build_metric_name(service, operation, "success") do
       {:ok, success_name} -> increment_counter(success_name)
-      _ -> :ok
+      {:error, reason} -> Logger.warning("Failed to build success metric name", reason: reason)
     end
 
     case build_metric_name(service, operation, "total") do
       {:ok, total_name} -> increment_counter(total_name)
-      _ -> :ok
+      {:error, reason} -> Logger.warning("Failed to build total metric name", reason: reason)
     end
   end
 
@@ -246,18 +418,27 @@ defmodule WandererKills.Core.Observability.Metrics do
   @spec record_failure(service(), atom(), atom()) :: :ok
   def record_failure(service, operation, reason) do
     case build_metric_name(service, operation, "failure") do
-      {:ok, failure_name} -> increment_counter(failure_name)
-      _ -> :ok
+      {:ok, failure_name} ->
+        increment_counter(failure_name)
+
+      {:error, error_reason} ->
+        Logger.warning("Failed to build failure metric name", reason: error_reason)
     end
 
     case build_metric_name(service, operation, "failure.#{reason}") do
-      {:ok, failure_reason_name} -> increment_counter(failure_reason_name)
-      _ -> :ok
+      {:ok, failure_reason_name} ->
+        increment_counter(failure_reason_name)
+
+      {:error, error_reason} ->
+        Logger.warning("Failed to build failure reason metric name", reason: error_reason)
     end
 
     case build_metric_name(service, operation, "total") do
-      {:ok, total_name} -> increment_counter(total_name)
-      _ -> :ok
+      {:ok, total_name} ->
+        increment_counter(total_name)
+
+      {:error, error_reason} ->
+        Logger.warning("Failed to build total metric name", reason: error_reason)
     end
   end
 
@@ -268,142 +449,18 @@ defmodule WandererKills.Core.Observability.Metrics do
   def record_duration(service, operation, duration_ms) do
     case build_metric_name(service, operation, "duration_ms") do
       {:ok, duration_name} -> record_histogram(duration_name, duration_ms)
-      _ -> :ok
+      {:error, reason} -> Logger.warning("Failed to build duration metric name", reason: reason)
     end
   end
 
   # Helper function to safely build metric names
   defp build_metric_name(service, operation, suffix)
        when is_atom(service) and is_atom(operation) do
-    metric_string = "#{service}.#{operation}.#{suffix}"
+    metric_string = "#{service}_#{operation}_#{suffix}"
 
-    case lookup_known_metric(service, operation, suffix) do
-      nil ->
-        Logger.debug("Unknown metric combination", metric_string: metric_string)
-        {:error, :unknown_metric}
-
-      atom ->
-        {:ok, atom}
-    end
-  end
-
-  # ESI metric mappings
-  defp lookup_known_metric(:esi, :get_character, "success"), do: :esi_get_character_success
-  defp lookup_known_metric(:esi, :get_character, "failure"), do: :esi_get_character_failure
-  defp lookup_known_metric(:esi, :get_character, "total"), do: :esi_get_character_total
-
-  defp lookup_known_metric(:esi, :get_character, "duration_ms"),
-    do: :esi_get_character_duration_ms
-
-  defp lookup_known_metric(:esi, :get_corporation, "success"), do: :esi_get_corporation_success
-  defp lookup_known_metric(:esi, :get_corporation, "failure"), do: :esi_get_corporation_failure
-  defp lookup_known_metric(:esi, :get_corporation, "total"), do: :esi_get_corporation_total
-
-  defp lookup_known_metric(:esi, :get_corporation, "duration_ms"),
-    do: :esi_get_corporation_duration_ms
-
-  # ZKB metric mappings
-  defp lookup_known_metric(:zkb, :fetch_system_killmails, "success"),
-    do: :zkb_fetch_system_killmails_success
-
-  defp lookup_known_metric(:zkb, :fetch_system_killmails, "failure"),
-    do: :zkb_fetch_system_killmails_failure
-
-  defp lookup_known_metric(:zkb, :fetch_system_killmails, "total"),
-    do: :zkb_fetch_system_killmails_total
-
-  defp lookup_known_metric(:zkb, :fetch_system_killmails, "duration_ms"),
-    do: :zkb_fetch_system_killmails_duration_ms
-
-  # Cache metric mappings
-  defp lookup_known_metric(:cache, :hit, "success"), do: :cache_hit_success
-  defp lookup_known_metric(:cache, :hit, "total"), do: :cache_hit_total
-  defp lookup_known_metric(:cache, :miss, "success"), do: :cache_miss_success
-  defp lookup_known_metric(:cache, :miss, "total"), do: :cache_miss_total
-
-  # Unknown metric combination
-  defp lookup_known_metric(_, _, _), do: nil
-
-  # Safe atom creation with ETS-based allowlist
-  defp safe_atom(string) when is_binary(string) do
-    case :ets.lookup(@metric_atoms_table, string) do
-      [{^string, atom}] ->
-        # Atom already exists and is allowed
-        atom
-
-      [] ->
-        # Check if atom already exists in VM
-        try do
-          existing_atom = String.to_existing_atom(string)
-          # Cache it for next time
-          :ets.insert(@metric_atoms_table, {string, existing_atom})
-          existing_atom
-        rescue
-          ArgumentError ->
-            # Atom doesn't exist, check if we can create it
-            create_metric_atom_if_allowed(string)
-        end
-    end
-  end
-
-  defp create_metric_atom_if_allowed(string) do
-    # Check if we've hit the limit
-    case :ets.info(@metric_atoms_table, :size) do
-      size when size >= @max_metric_atoms ->
-        Logger.warning("Metric atom limit reached, rejecting new atom",
-          atom_string: string,
-          limit: @max_metric_atoms
-        )
-
-        # Return a generic error atom instead of creating new ones
-        :metric_atom_limit_exceeded
-
-      _size ->
-        # Validate the metric name format
-        if valid_metric_name?(string) do
-          # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
-          atom = String.to_atom(string)
-          :ets.insert(@metric_atoms_table, {string, atom})
-          Logger.debug("Created new metric atom", atom_string: string)
-          atom
-        else
-          Logger.warning("Invalid metric name format", atom_string: string)
-          :invalid_metric_name
-        end
-    end
-  end
-
-  # Validate metric name format to prevent arbitrary atom creation
-  defp valid_metric_name?(string) do
-    # Only allow alphanumeric, dots, underscores, and limited length
-    String.match?(string, ~r/^[a-zA-Z0-9._]{1,100}$/) and
-      not String.starts_with?(string, ".") and
-      not String.ends_with?(string, ".")
-  end
-
-  # Pre-populate known metric patterns
-  defp populate_known_metrics do
-    known_patterns = [
-      # HTTP metrics
-      ~w(http.zkb.requests http.zkb.GET http.zkb.POST http.zkb.status.2xx http.zkb.status.4xx http.zkb.status.5xx http.zkb.duration_ms),
-      ~w(http.esi.requests http.esi.GET http.esi.POST http.esi.status.2xx http.esi.status.4xx http.esi.status.5xx http.esi.duration_ms),
-      # Cache metrics
-      ~w(cache.wanderer_cache.hit cache.wanderer_cache.miss cache.wanderer_cache.put cache.wanderer_cache.eviction cache.wanderer_cache.total),
-      ~w(cache.character_cache.hit cache.character_cache.miss cache.character_cache.put cache.character_cache.eviction cache.character_cache.total),
-      # Killmail metrics
-      ~w(killmail.stored killmail.skipped killmail.failed killmail.enriched),
-      # System metrics
-      ~w(system.memory system.processes system.ports system.atom_count system.ets_count),
-      # WebSocket metrics
-      ~w(websocket.connections websocket.subscriptions websocket.messages_sent),
-      # Parser metrics
-      ~w(killmail_stored killmail_skipped killmail_failed)
-    ]
-
-    for patterns <- known_patterns, pattern <- patterns do
-      # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
-      atom = String.to_atom(pattern)
-      :ets.insert(@metric_atoms_table, {pattern, atom})
+    case safe_metric_atom(metric_string) do
+      :invalid_metric -> {:error, :invalid_metric_name}
+      atom_name -> {:ok, atom_name}
     end
   end
 
@@ -443,32 +500,75 @@ defmodule WandererKills.Core.Observability.Metrics do
   # ============================================================================
 
   @impl true
-  def init(_opts) do
-    Logger.info("[Metrics] Starting unified metrics collection")
+  def init(opts) do
+    Logger.info("[Metrics] Starting consolidated metrics collection")
 
-    # Create ETS table for metric atoms if it doesn't exist
-    case :ets.whereis(@metric_atoms_table) do
-      :undefined ->
-        :ets.new(@metric_atoms_table, [:set, :public, :named_table, read_concurrency: true])
-        # Pre-populate with known metric patterns
-        populate_known_metrics()
+    # Create ETS table for API metrics
+    :ets.new(@table_name, [:set, :public, :named_table, {:write_concurrency, true}])
 
-      _ ->
-        :ok
+    # Schedule periodic cleanup and health checks
+    if !Keyword.get(opts, :disable_periodic_cleanup, false) do
+      schedule_cleanup()
     end
+
+    if !Keyword.get(opts, :disable_periodic_summary, false) do
+      schedule_stats_summary()
+    end
+
+    if !Keyword.get(opts, :disable_health_check, false) do
+      schedule_health_check()
+    end
+
+    # Attach telemetry handlers
+    schedule_telemetry_attachment()
 
     state = %{
       start_time: DateTime.utc_now(),
       metrics: %{},
       counters: %{},
       gauges: %{},
-      histograms: %{}
+      histograms: %{},
+      # API tracking state
+      api_metrics: %{},
+      # WebSocket state
+      websocket_stats: %{
+        kills_sent: %{
+          realtime: 0,
+          preload: 0
+        },
+        connections: %{
+          total_connected: 0,
+          total_disconnected: 0,
+          active: 0
+        },
+        subscriptions: %{
+          total_added: 0,
+          total_removed: 0,
+          active: 0,
+          total_systems: 0,
+          total_characters: 0
+        },
+        rates: %{
+          last_measured: DateTime.utc_now(),
+          kills_per_minute: 0.0,
+          connections_per_minute: 0.0
+        },
+        started_at: DateTime.utc_now(),
+        last_reset: DateTime.utc_now()
+      }
     }
 
-    # Schedule periodic metric emission
-    schedule_metric_emission()
-
     {:ok, state}
+  end
+
+  # API tracking handlers
+  @impl true
+  def handle_cast({:track_api_request, metric}, state) do
+    # Store metric in ETS with unique key
+    key = {metric.service, metric.timestamp, :rand.uniform(1_000_000)}
+    :ets.insert(@table_name, {key, metric})
+
+    {:noreply, state}
   end
 
   @impl true
@@ -480,16 +580,155 @@ defmodule WandererKills.Core.Observability.Metrics do
       Map.merge(metadata, %{service: service, method: method})
     )
 
+    # Track API request directly (avoid double-casting)
+    api_metric = %{
+      timestamp: System.monotonic_time(:millisecond),
+      service: service,
+      endpoint: Map.get(metadata, :url),
+      duration_ms: duration_ms,
+      status_code: status_code,
+      error: status_code >= 400
+    }
+
+    # Update state with API request tracking directly
+    key = {api_metric.service, api_metric.timestamp, :rand.uniform(1_000_000)}
+    :ets.insert(@table_name, {key, api_metric})
+
     # Update counters
     status_class = div(status_code, 100)
 
     new_state =
       state
-      |> increment_counter_internal(safe_atom("http.#{service}.requests"))
-      |> increment_counter_internal(safe_atom("http.#{service}.#{method}"))
-      |> increment_counter_internal(safe_atom("http.#{service}.status.#{status_class}xx"))
-      |> record_histogram_internal(safe_atom("http.#{service}.duration_ms"), duration_ms)
+      |> increment_counter_internal(safe_metric_atom("http_#{service}_requests"))
+      |> increment_counter_internal(safe_metric_atom("http_#{service}_#{method}"))
+      |> increment_counter_internal(safe_metric_atom("http_#{service}_status_#{status_class}xx"))
+      |> record_histogram_internal(safe_metric_atom("http_#{service}_duration_ms"), duration_ms)
 
+    {:noreply, new_state}
+  end
+
+  # WebSocket handlers
+  @impl true
+  def handle_cast({:increment_kills_sent, type, count}, state) do
+    new_kills_sent = Map.update!(state.websocket_stats.kills_sent, type, &(&1 + count))
+    new_websocket_stats = %{state.websocket_stats | kills_sent: new_kills_sent}
+    new_state = %{state | websocket_stats: new_websocket_stats}
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_cast({:track_websocket_connection, :connected, _metadata}, state) do
+    new_connections = %{
+      state.websocket_stats.connections
+      | total_connected: state.websocket_stats.connections.total_connected + 1,
+        active: state.websocket_stats.connections.active + 1
+    }
+
+    new_websocket_stats = %{state.websocket_stats | connections: new_connections}
+    new_state = %{state | websocket_stats: new_websocket_stats}
+
+    # Immediately persist WebSocket stats to ETS so dashboard shows current data
+    websocket_stats_response = build_websocket_stats_response(new_state)
+
+    if :ets.info(EtsOwner.wanderer_kills_stats_table()) != :undefined do
+      :ets.insert(
+        EtsOwner.wanderer_kills_stats_table(),
+        {:websocket_stats, websocket_stats_response}
+      )
+    end
+
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_cast({:track_websocket_connection, :disconnected, _metadata}, state) do
+    new_connections = %{
+      state.websocket_stats.connections
+      | total_disconnected: state.websocket_stats.connections.total_disconnected + 1,
+        active: max(0, state.websocket_stats.connections.active - 1)
+    }
+
+    new_websocket_stats = %{state.websocket_stats | connections: new_connections}
+    new_state = %{state | websocket_stats: new_websocket_stats}
+
+    # Immediately persist WebSocket stats to ETS so dashboard shows current data
+    websocket_stats_response = build_websocket_stats_response(new_state)
+
+    if :ets.info(EtsOwner.wanderer_kills_stats_table()) != :undefined do
+      :ets.insert(
+        EtsOwner.wanderer_kills_stats_table(),
+        {:websocket_stats, websocket_stats_response}
+      )
+    end
+
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_cast(
+        {:track_websocket_subscription, :added, system_count, character_count, _metadata},
+        state
+      ) do
+    new_subscriptions = %{
+      state.websocket_stats.subscriptions
+      | total_added: state.websocket_stats.subscriptions.total_added + 1,
+        active: state.websocket_stats.subscriptions.active + 1,
+        total_systems: state.websocket_stats.subscriptions.total_systems + system_count,
+        total_characters: state.websocket_stats.subscriptions.total_characters + character_count
+    }
+
+    new_websocket_stats = %{state.websocket_stats | subscriptions: new_subscriptions}
+    new_state = %{state | websocket_stats: new_websocket_stats}
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_cast(
+        {
+          :track_websocket_subscription,
+          :removed,
+          system_count,
+          character_count,
+          _metadata
+        },
+        state
+      ) do
+    new_subscriptions = %{
+      state.websocket_stats.subscriptions
+      | total_removed: state.websocket_stats.subscriptions.total_removed + 1,
+        active: max(0, state.websocket_stats.subscriptions.active - 1),
+        total_systems: max(0, state.websocket_stats.subscriptions.total_systems - system_count),
+        total_characters:
+          max(0, state.websocket_stats.subscriptions.total_characters - character_count)
+    }
+
+    new_websocket_stats = %{state.websocket_stats | subscriptions: new_subscriptions}
+    new_state = %{state | websocket_stats: new_websocket_stats}
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_cast(
+        {
+          :track_websocket_subscription,
+          :updated,
+          system_count_delta,
+          character_count_delta,
+          _metadata
+        },
+        state
+      ) do
+    # For updates, adjust the total system and character counts by the deltas
+    new_subscriptions = %{
+      state.websocket_stats.subscriptions
+      | total_systems:
+          max(0, state.websocket_stats.subscriptions.total_systems + system_count_delta),
+        total_characters:
+          max(0, state.websocket_stats.subscriptions.total_characters + character_count_delta)
+    }
+
+    new_websocket_stats = %{state.websocket_stats | subscriptions: new_subscriptions}
+    new_state = %{state | websocket_stats: new_websocket_stats}
     {:noreply, new_state}
   end
 
@@ -505,8 +744,8 @@ defmodule WandererKills.Core.Observability.Metrics do
     # Update counters
     new_state =
       state
-      |> increment_counter_internal(safe_atom("cache.#{cache_name}.#{operation}"))
-      |> increment_counter_internal(safe_atom("cache.#{cache_name}.total"))
+      |> increment_counter_internal(safe_metric_atom("cache.#{cache_name}.#{operation}"))
+      |> increment_counter_internal(safe_metric_atom("cache.#{cache_name}.total"))
 
     {:noreply, new_state}
   end
@@ -523,7 +762,7 @@ defmodule WandererKills.Core.Observability.Metrics do
     # Update counters
     new_state =
       state
-      |> increment_counter_internal(safe_atom("killmail.#{result}"))
+      |> increment_counter_internal(safe_metric_atom("killmail.#{result}"))
       |> increment_counter_internal(:killmail_total)
 
     {:noreply, new_state}
@@ -560,7 +799,7 @@ defmodule WandererKills.Core.Observability.Metrics do
     )
 
     # Update gauge
-    new_state = set_gauge_internal(state, safe_atom("system.#{resource}"), value)
+    new_state = set_gauge_internal(state, safe_metric_atom("system.#{resource}"), value)
 
     {:noreply, new_state}
   end
@@ -583,6 +822,43 @@ defmodule WandererKills.Core.Observability.Metrics do
     {:noreply, new_state}
   end
 
+  # API stats calls
+  @impl true
+  def handle_call(:get_api_stats, _from, state) do
+    stats = %{
+      zkillboard: calculate_api_service_stats(:zkillboard),
+      esi: calculate_api_service_stats(:esi),
+      tracking_duration_minutes: tracking_duration_minutes(state)
+    }
+
+    {:reply, stats, state}
+  end
+
+  @impl true
+  def handle_call({:get_api_service_stats, service}, _from, state) do
+    stats = calculate_api_service_stats(service)
+    {:reply, stats, state}
+  end
+
+  # WebSocket stats calls
+  @impl true
+  def handle_call(:get_websocket_stats, _from, state) do
+    stats = build_websocket_stats_response(state)
+    {:reply, {:ok, stats}, state}
+  end
+
+  @impl true
+  def handle_call(:reset_websocket_stats, _from, state) do
+    new_websocket_stats = %{
+      state.websocket_stats
+      | kills_sent: %{realtime: 0, preload: 0},
+        last_reset: DateTime.utc_now()
+    }
+
+    new_state = %{state | websocket_stats: new_websocket_stats}
+    {:reply, :ok, new_state}
+  end
+
   @impl true
   def handle_call(:get_all_metrics, _from, state) do
     metrics = build_all_metrics(state)
@@ -602,20 +878,79 @@ defmodule WandererKills.Core.Observability.Metrics do
   end
 
   @impl true
-  def handle_info(:emit_metrics, state) do
-    # Emit aggregated metrics periodically
-    emit_aggregated_metrics(state)
-    schedule_metric_emission()
+  def handle_info(:attach_telemetry, state) do
+    attach_telemetry_handlers()
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:cleanup, state) do
+    # Remove API metrics older than window size
+    cutoff = System.monotonic_time(:millisecond) - @window_size_ms
+    :ets.select_delete(@table_name, cleanup_match_spec(cutoff))
+
+    # Schedule next cleanup
+    schedule_cleanup()
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:stats_summary, state) do
+    # Store stats in ETS for unified status reporter
+    websocket_stats = build_websocket_stats_response(state)
+
+    api_stats = %{
+      zkillboard: calculate_api_service_stats(:zkillboard),
+      esi: calculate_api_service_stats(:esi)
+    }
+
+    if :ets.info(EtsOwner.wanderer_kills_stats_table()) != :undefined do
+      :ets.insert(EtsOwner.wanderer_kills_stats_table(), {:websocket_stats, websocket_stats})
+      :ets.insert(EtsOwner.wanderer_kills_stats_table(), {:api_stats, api_stats})
+    end
+
+    # Emit telemetry for the summary
+    :telemetry.execute(
+      [:wanderer_kills, :metrics, :summary],
+      %{
+        websocket_active_connections: websocket_stats.connections.active,
+        websocket_total_kills_sent: websocket_stats.kills_sent.total,
+        api_zkb_requests: Map.get(api_stats.zkillboard, :total_requests, 0),
+        api_esi_requests: Map.get(api_stats.esi, :total_requests, 0)
+      },
+      %{period: "5_minutes"}
+    )
+
+    schedule_stats_summary()
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:health_check, state) do
+    # Reconcile WebSocket connection stats if needed
+    new_state = reconcile_websocket_connection_stats(state)
+    schedule_health_check()
+    {:noreply, new_state}
   end
 
   # ============================================================================
   # Private Functions
   # ============================================================================
 
-  defp schedule_metric_emission do
-    # Emit metrics every 30 seconds
-    Process.send_after(self(), :emit_metrics, 30_000)
+  defp schedule_telemetry_attachment do
+    Process.send_after(self(), :attach_telemetry, 100)
+  end
+
+  defp schedule_cleanup do
+    Process.send_after(self(), :cleanup, @cleanup_interval_ms)
+  end
+
+  defp schedule_stats_summary do
+    Process.send_after(self(), :stats_summary, @stats_summary_interval)
+  end
+
+  defp schedule_health_check do
+    Process.send_after(self(), :health_check, @health_check_interval)
   end
 
   defp increment_counter_internal(state, name, amount \\ 1) do
@@ -638,7 +973,7 @@ defmodule WandererKills.Core.Observability.Metrics do
     uptime_seconds = DateTime.diff(DateTime.utc_now(), state.start_time)
 
     %{
-      timestamp: Clock.now_iso8601(),
+      timestamp: Utils.now_iso8601(),
       uptime_seconds: uptime_seconds,
       counters: state.counters,
       gauges: state.gauges,
@@ -667,7 +1002,7 @@ defmodule WandererKills.Core.Observability.Metrics do
 
     %{
       service: service,
-      timestamp: Clock.now_iso8601(),
+      timestamp: Utils.now_iso8601(),
       counters: counters,
       gauges: gauges,
       histograms: histograms
@@ -704,7 +1039,7 @@ defmodule WandererKills.Core.Observability.Metrics do
     counters
     |> Enum.map(fn {name, count} ->
       rate = if duration_seconds > 0, do: count / duration_seconds, else: 0
-      {safe_atom("#{name}_per_second"), Float.round(rate, 2)}
+      {safe_metric_atom("#{name}_per_second"), Float.round(rate, 2)}
     end)
     |> Map.new()
   end
@@ -724,43 +1059,322 @@ defmodule WandererKills.Core.Observability.Metrics do
     end
   end
 
-  defp emit_aggregated_metrics(state) do
-    # Emit system-wide metrics
-    uptime_seconds = DateTime.diff(DateTime.utc_now(), state.start_time)
-
-    # HTTP metrics
-    http_total = count_by_prefix(state.counters, "http.")
-    http_success = count_by_prefix(state.counters, "http.", "status.2")
-
-    http_errors =
-      count_by_prefix(state.counters, "http.", "status.4") +
-        count_by_prefix(state.counters, "http.", "status.5")
-
-    :telemetry.execute(
-      [:wanderer_kills, :metrics, :summary],
-      %{
-        http_requests_total: http_total,
-        http_success_rate: Statistics.calculate_success_rate(http_success, http_total),
-        http_error_rate: Statistics.calculate_percentage(http_errors, http_total),
-        killmails_processed: Map.get(state.counters, :killmail_total, 0),
-        killmails_stored: Map.get(state.counters, :killmail_stored, 0),
-        killmails_skipped: Map.get(state.counters, :killmail_skipped, 0),
-        killmails_failed: Map.get(state.counters, :killmail_failed, 0),
-        uptime_seconds: uptime_seconds
-      },
-      %{timestamp: Clock.now_iso8601()}
+  # API tracking functions (from api_tracker.ex)
+  defp attach_telemetry_handlers do
+    :telemetry.attach_many(
+      "consolidated-metrics-http-events",
+      [
+        [:wanderer_kills, :http, :request, :stop],
+        [:wanderer_kills, :http, :request, :error]
+      ],
+      &__MODULE__.handle_http_telemetry/4,
+      nil
     )
   end
 
-  defp count_by_prefix(counters, prefix, contains \\ nil) do
-    counters
-    |> Enum.filter(fn {key, _} ->
-      key_str = Atom.to_string(key)
-      starts_with = String.starts_with?(key_str, prefix)
-      contains_match = is_nil(contains) or String.contains?(key_str, contains)
-      starts_with and contains_match
+  @doc false
+  def handle_http_telemetry(_event_name, measurements, metadata, _config) do
+    service = determine_service_from_metadata(metadata)
+
+    if service do
+      track_api_request(service,
+        endpoint: extract_endpoint(metadata),
+        duration_ms: div(measurements[:duration] || 0, 1_000_000),
+        status_code: metadata[:status_code],
+        error: metadata[:error] != nil
+      )
+    end
+  end
+
+  defp determine_service_from_metadata(%{url: url}) when is_binary(url) do
+    cond do
+      String.contains?(url, "zkillboard.com") -> :zkillboard
+      String.contains?(url, "esi.evetech.net") -> :esi
+      true -> nil
+    end
+  end
+
+  defp determine_service_from_metadata(_), do: nil
+
+  defp extract_endpoint(%{url: url}) when is_binary(url) do
+    case URI.parse(url) do
+      %{path: path} when is_binary(path) ->
+        normalize_endpoint_path(path)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp extract_endpoint(_), do: nil
+
+  defp normalize_endpoint_path(path) do
+    path
+    |> String.split("/")
+    |> Enum.map(&replace_id_segment/1)
+    |> Enum.join("/")
+  end
+
+  defp replace_id_segment(segment) do
+    if String.match?(segment, ~r/^\d+$/), do: "{id}", else: segment
+  end
+
+  defp calculate_api_service_stats(service) do
+    now = System.monotonic_time(:millisecond)
+    window_start = now - :timer.minutes(5)
+    one_minute_ago = now - :timer.minutes(1)
+
+    # Get all metrics for this service within window
+    match_spec = [
+      {
+        {{:"$1", :"$2", :_}, :"$3"},
+        [
+          {:==, :"$1", service},
+          {:>, :"$2", window_start}
+        ],
+        [:"$3"]
+      }
+    ]
+
+    metrics = :ets.select(@table_name, match_spec)
+
+    # Calculate statistics
+    total_count = length(metrics)
+    recent_metrics = Enum.filter(metrics, &(&1.timestamp > one_minute_ago))
+    recent_count = length(recent_metrics)
+
+    error_count = Enum.count(metrics, & &1.error)
+    successful_metrics = Enum.filter(metrics, &(!&1.error && &1.duration_ms > 0))
+
+    durations = Enum.map(successful_metrics, & &1.duration_ms)
+
+    avg_duration =
+      if length(durations) > 0 do
+        Enum.sum(durations) / length(durations)
+      else
+        0.0
+      end
+
+    # Group by endpoint
+    endpoint_stats =
+      metrics
+      |> Enum.group_by(& &1.endpoint)
+      |> Enum.map(fn {endpoint, endpoint_metrics} ->
+        {endpoint || "unknown",
+         %{
+           count: length(endpoint_metrics),
+           errors: Enum.count(endpoint_metrics, & &1.error)
+         }}
+      end)
+      |> Enum.into(%{})
+
+    %{
+      total_requests: total_count,
+      requests_per_minute: recent_count,
+      error_count: error_count,
+      error_rate: if(total_count > 0, do: error_count / total_count * 100, else: 0.0),
+      avg_duration_ms: Float.round(avg_duration, 1),
+      min_duration_ms: Enum.min(durations, fn -> 0 end),
+      max_duration_ms: Enum.max(durations, fn -> 0 end),
+      endpoints: endpoint_stats
+    }
+  end
+
+  defp tracking_duration_minutes(state) do
+    now = System.monotonic_time(:millisecond)
+    start_time_ms = DateTime.to_unix(state.start_time, :millisecond)
+    div(now - start_time_ms, :timer.minutes(1))
+  end
+
+  defp cleanup_match_spec(cutoff) do
+    [
+      {
+        {{:"$1", :"$2", :_}, %{timestamp: :"$2"}},
+        [{:<, :"$2", cutoff}],
+        [true]
+      }
+    ]
+  end
+
+  # WebSocket functions (from websocket_stats.ex)
+  defp build_websocket_stats_response(state) do
+    ws_stats = state.websocket_stats
+    total_kills = ws_stats.kills_sent.realtime + ws_stats.kills_sent.preload
+    uptime_seconds = DateTime.diff(DateTime.utc_now(), ws_stats.started_at)
+
+    %{
+      kills_sent: %{
+        realtime: ws_stats.kills_sent.realtime,
+        preload: ws_stats.kills_sent.preload,
+        total: total_kills
+      },
+      connections: %{
+        active: ws_stats.connections.active,
+        total_connected: ws_stats.connections.total_connected,
+        total_disconnected: ws_stats.connections.total_disconnected
+      },
+      subscriptions: %{
+        active: ws_stats.subscriptions.active,
+        total_added: ws_stats.subscriptions.total_added,
+        total_removed: ws_stats.subscriptions.total_removed,
+        total_systems: ws_stats.subscriptions.total_systems,
+        total_characters: ws_stats.subscriptions.total_characters
+      },
+      rates: calculate_websocket_current_rates(ws_stats),
+      uptime_seconds: uptime_seconds,
+      started_at: DateTime.to_iso8601(ws_stats.started_at),
+      last_reset: DateTime.to_iso8601(ws_stats.last_reset),
+      timestamp: Utils.now_iso8601()
+    }
+  end
+
+  defp calculate_websocket_current_rates(ws_stats) do
+    uptime_minutes = max(1, DateTime.diff(DateTime.utc_now(), ws_stats.started_at) / 60)
+    reset_minutes = max(1, DateTime.diff(DateTime.utc_now(), ws_stats.last_reset) / 60)
+
+    total_kills = ws_stats.kills_sent.realtime + ws_stats.kills_sent.preload
+
+    %{
+      kills_per_minute: total_kills / reset_minutes,
+      connections_per_minute: ws_stats.connections.total_connected / uptime_minutes,
+      average_systems_per_subscription:
+        if ws_stats.subscriptions.active > 0 do
+          ws_stats.subscriptions.total_systems / ws_stats.subscriptions.active
+        else
+          0.0
+        end
+    }
+  end
+
+  defp reconcile_websocket_connection_stats(state) do
+    try do
+      # Get actual monitored connections from HeartbeatMonitor
+      heartbeat_stats = WandererKillsWeb.Channels.HeartbeatMonitor.get_stats()
+      actual_connections = heartbeat_stats.monitored_connections
+
+      # Get tracked connection count from our metrics
+      current_ws_stats = state.websocket_stats
+      tracked_active = current_ws_stats.connections.active
+
+      # Check for discrepancies
+      if actual_connections != tracked_active do
+        Logger.warning("[Metrics] WebSocket connection reconciliation found discrepancy",
+          tracked: tracked_active,
+          actual: actual_connections,
+          difference: actual_connections - tracked_active
+        )
+
+        # Emit telemetry for monitoring
+        :telemetry.execute(
+          [:wanderer_kills, :websocket, :reconciliation],
+          %{
+            tracked_connections: tracked_active,
+            actual_connections: actual_connections,
+            discrepancy: actual_connections - tracked_active
+          },
+          %{source: :heartbeat_monitor}
+        )
+
+        # Update the active connection count to match reality
+        updated_connections =
+          put_in(
+            current_ws_stats.connections.active,
+            actual_connections
+          )
+
+        updated_ws_stats = %{current_ws_stats | connections: updated_connections}
+
+        # Update ETS table with corrected stats
+        :ets.insert(EtsOwner.wanderer_kills_stats_table(), {:websocket_stats, updated_ws_stats})
+
+        %{state | websocket_stats: updated_ws_stats}
+      else
+        # Connections are in sync
+        state
+      end
+    rescue
+      error ->
+        Logger.error("[Metrics] Failed to reconcile WebSocket connections",
+          error: inspect(error),
+          stacktrace: __STACKTRACE__
+        )
+
+        # Return original state on error to avoid crashes
+        state
+    end
+  end
+
+  # Safe metric atom creation with pattern validation to prevent atom table exhaustion
+  defp safe_metric_atom(string) when is_binary(string) do
+    if valid_metric_name?(string) do
+      case :ets.lookup(@table_name, {:metric_atom, string}) do
+        [{_, atom}] -> atom
+        [] -> create_and_store_metric_atom(string)
+      end
+    else
+      Logger.warning("Invalid metric name attempted", metric: string)
+      :invalid_metric
+    end
+  end
+
+  defp create_and_store_metric_atom(string) do
+    # Check current size of metric atoms in the table
+    current_count = count_metric_atoms()
+
+    if current_count >= @max_metric_atoms do
+      Logger.warning("Metric atom table size limit reached",
+        current_count: current_count,
+        limit: @max_metric_atoms,
+        attempted_metric: string
+      )
+
+      :table_size_limit_reached
+    else
+      atom = String.to_existing_atom(string)
+      :ets.insert(@table_name, {{:metric_atom, string}, atom})
+      atom
+    end
+  rescue
+    ArgumentError ->
+      # Check size limit again before creating new atom
+      current_count = count_metric_atoms()
+
+      if current_count >= @max_metric_atoms do
+        Logger.warning("Metric atom table size limit reached",
+          current_count: current_count,
+          limit: @max_metric_atoms,
+          attempted_metric: string
+        )
+
+        :table_size_limit_reached
+      else
+        # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+        atom = String.to_atom(string)
+        :ets.insert(@table_name, {{:metric_atom, string}, atom})
+        atom
+      end
+  end
+
+  # Count the number of metric atoms currently stored in the table
+  defp count_metric_atoms do
+    match_spec = [{{:metric_atom, :"$1"}, :"$2", []}]
+    :ets.select_count(@table_name, match_spec)
+  end
+
+  # Check if a metric name matches any of our allowed patterns
+  defp valid_metric_name?(string) do
+    Enum.any?(@metric_patterns, fn pattern ->
+      Regex.match?(pattern, string)
     end)
-    |> Enum.map(fn {_, value} -> value end)
-    |> Enum.sum()
+  end
+
+  @impl true
+  def terminate(_reason, _state) do
+    # Clean up ETS table on termination
+    if :ets.info(@table_name) != :undefined do
+      :ets.delete(@table_name)
+    end
+
+    :ok
   end
 end

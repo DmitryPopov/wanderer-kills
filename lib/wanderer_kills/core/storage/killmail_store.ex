@@ -205,6 +205,13 @@ defmodule WandererKills.Core.Storage.KillmailStore do
     end
   end
 
+  @doc """
+  Get system killmails (alias for list_by_system for API compatibility).
+  """
+  def get_system_killmails(system_id) when is_integer(system_id) do
+    list_by_system(system_id)
+  end
+
   # ============================================================================
   # System Operations
   # ============================================================================
@@ -631,71 +638,69 @@ defmodule WandererKills.Core.Storage.KillmailStore do
   - client_offsets: 1 day
   """
   def cleanup_old_data do
-    try do
-      Logger.info("[KillmailStore] Starting cleanup of old data")
+    Logger.info("[KillmailStore] Starting cleanup of old data")
 
-      now = DateTime.utc_now()
+    now = DateTime.utc_now()
 
-      # Define TTLs in seconds - configurable via environment variables
-      killmail_retention_days =
-        case Integer.parse(System.get_env("KILLMAIL_RETENTION_DAYS", "2")) do
-          {value, ""} when value > 0 -> value
-          _ -> 2
-        end
+    # Define TTLs in seconds - configurable via environment variables
+    killmail_retention_days =
+      case Integer.parse(System.get_env("KILLMAIL_RETENTION_DAYS", "2")) do
+        {value, ""} when value > 0 -> value
+        _ -> 2
+      end
 
-      killmail_ttl = killmail_retention_days * 24 * 60 * 60
+    killmail_ttl = killmail_retention_days * 24 * 60 * 60
 
-      Logger.info(
-        "[KillmailStore] Using retention settings: #{killmail_retention_days} days for killmails"
+    Logger.info(
+      "[KillmailStore] Using retention settings: #{killmail_retention_days} days for killmails"
+    )
+
+    # Other TTLs remain hardcoded for now (12 hours)
+    system_count_ttl = 12 * 60 * 60
+    timestamp_ttl = 12 * 60 * 60
+    # 1 day
+    client_offset_ttl = 24 * 60 * 60
+
+    # Track cleanup stats
+    stats = %{
+      killmails_removed: 0,
+      system_killmails_cleaned: 0,
+      system_counts_removed: 0,
+      timestamps_removed: 0,
+      events_removed: 0,
+      client_offsets_removed: 0
+    }
+
+    # Cleanup killmails older than 7 days
+    stats = cleanup_killmails(now, killmail_ttl, stats)
+
+    # Cleanup system kill counts older than 1 day
+    stats = cleanup_system_counts(now, system_count_ttl, stats)
+
+    # Cleanup fetch timestamps older than 1 day
+    stats = cleanup_fetch_timestamps(now, timestamp_ttl, stats)
+
+    # Cleanup event streaming data if enabled
+    final_stats =
+      if event_streaming_enabled?() do
+        stats
+        |> cleanup_events(now, killmail_ttl)
+        |> cleanup_client_offsets(now, client_offset_ttl)
+      else
+        stats
+      end
+
+    Logger.info("[KillmailStore] Cleanup completed", final_stats)
+
+    {:ok, final_stats}
+  rescue
+    error ->
+      Logger.error("[KillmailStore] Cleanup failed",
+        error: inspect(error),
+        stacktrace: __STACKTRACE__
       )
 
-      # Other TTLs remain hardcoded for now (12 hours)
-      system_count_ttl = 12 * 60 * 60
-      timestamp_ttl = 12 * 60 * 60
-      # 1 day
-      client_offset_ttl = 24 * 60 * 60
-
-      # Track cleanup stats
-      stats = %{
-        killmails_removed: 0,
-        system_killmails_cleaned: 0,
-        system_counts_removed: 0,
-        timestamps_removed: 0,
-        events_removed: 0,
-        client_offsets_removed: 0
-      }
-
-      # Cleanup killmails older than 7 days
-      stats = cleanup_killmails(now, killmail_ttl, stats)
-
-      # Cleanup system kill counts older than 1 day
-      stats = cleanup_system_counts(now, system_count_ttl, stats)
-
-      # Cleanup fetch timestamps older than 1 day
-      stats = cleanup_fetch_timestamps(now, timestamp_ttl, stats)
-
-      # Cleanup event streaming data if enabled
-      final_stats =
-        if event_streaming_enabled?() do
-          stats
-          |> cleanup_events(now, killmail_ttl)
-          |> cleanup_client_offsets(now, client_offset_ttl)
-        else
-          stats
-        end
-
-      Logger.info("[KillmailStore] Cleanup completed", final_stats)
-
-      {:ok, final_stats}
-    rescue
-      error ->
-        Logger.error("[KillmailStore] Cleanup failed",
-          error: inspect(error),
-          stacktrace: __STACKTRACE__
-        )
-
-        {:error, error}
-    end
+      {:error, error}
   end
 
   defp cleanup_killmails(now, ttl, stats) do

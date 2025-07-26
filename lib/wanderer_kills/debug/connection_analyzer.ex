@@ -3,15 +3,16 @@ defmodule WandererKills.Debug.ConnectionAnalyzer do
   Diagnostic tool to analyze WebSocket connection leaks
   """
 
-  alias WandererKills.Core.Observability.WebSocketStats
-  alias WandererKills.Subs.{SubscriptionManager, SubscriptionWorker}
+  alias WandererKills.Core.Observability.Metrics
+  alias WandererKills.Core.Storage.KillmailStore
+  alias WandererKills.Subs.SimpleSubscriptionManager, as: SubscriptionManager
 
   def analyze_connections do
     IO.puts("\n=== WebSocket Connection Analysis ===\n")
 
     # Get WebSocket stats with error handling
     stats =
-      case WebSocketStats.get_stats() do
+      case Metrics.get_websocket_stats() do
         {:ok, stats} ->
           stats
 
@@ -54,23 +55,11 @@ defmodule WandererKills.Debug.ConnectionAnalyzer do
     IO.puts("  Alive socket processes: #{length(alive_sockets)}")
     IO.puts("  Dead socket processes: #{length(websocket_subs) - length(alive_sockets)}")
 
-    # Check subscription workers with error handling
-    worker_pids =
-      subscriptions
-      |> Enum.map(fn sub ->
-        try do
-          case SubscriptionWorker.lookup_subscription(sub["id"]) do
-            {:ok, pid} -> pid
-            :error -> nil
-          end
-        rescue
-          _ -> nil
-        end
-      end)
-      |> Enum.filter(& &1)
-
+    # Note: In the simplified architecture, we no longer have individual
+    # subscription worker processes. The SimpleSubscriptionManager handles
+    # all subscriptions in a single process.
     IO.puts("\nSubscription Workers:")
-    IO.puts("  Active workers: #{length(worker_pids)}")
+    IO.puts("  Active workers: N/A (simplified architecture)")
 
     # Get Phoenix channel processes
     channel_processes = find_channel_processes()
@@ -134,9 +123,10 @@ defmodule WandererKills.Debug.ConnectionAnalyzer do
 
     cond do
       has_initial_call?(dict, WandererKillsWeb.KillmailChannel) -> "KillmailChannel"
-      has_initial_call?(dict, WandererKills.Subs.SubscriptionWorker) -> "SubscriptionWorker"
+      # SubscriptionWorker removed in simplified architecture
+      # has_initial_call?(dict, WandererKills.Subs.SubscriptionWorker) -> "SubscriptionWorker"
       has_initial_call?(dict, Phoenix.Channel.Server) -> "Phoenix.Channel"
-      has_initial_call?(dict, WandererKills.Storage.KillmailStore) -> "KillmailStore"
+      has_initial_call?(dict, KillmailStore) -> "KillmailStore"
       elem(current, 0) == :gen_server -> "GenServer"
       elem(current, 0) == :supervisor -> "Supervisor"
       true -> "Other"

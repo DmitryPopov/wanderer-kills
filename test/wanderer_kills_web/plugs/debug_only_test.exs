@@ -1,5 +1,7 @@
 defmodule WandererKillsWeb.Plugs.DebugOnlyTest do
-  use WandererKillsWeb.ConnCase
+  use WandererKills.UnifiedTestCase, type: :conn
+
+  import Phoenix.ConnTest
 
   alias WandererKillsWeb.Plugs.DebugOnly
 

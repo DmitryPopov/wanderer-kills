@@ -4,26 +4,25 @@ defmodule WandererKills.Subs.PreloaderTest do
   alias WandererKills.Subs.Preloader
 
   describe "preload_kills_for_systems/2" do
-    test "returns empty list for empty system_ids" do
-      assert [] = Preloader.preload_kills_for_systems([])
+    test "returns empty map for empty system_ids" do
+      assert %{} = Preloader.preload_kills_for_systems([])
     end
 
-    test "returns list of batches" do
+    test "returns map of system kills" do
       # This will fetch from cache or API based on what's available
       # We're just testing the structure is correct
-      batches =
+      result =
         Preloader.preload_kills_for_systems([30_000_142],
           days: 1,
           batch_size: 10
         )
 
-      # Should return a list (even if empty)
-      assert is_list(batches)
+      # Should return a map
+      assert is_map(result)
 
-      # Each item should be a batch (list)
-      Enum.each(batches, fn batch ->
-        assert is_list(batch)
-      end)
+      # Each system ID should map to a list of kills
+      assert Map.has_key?(result, 30_000_142)
+      assert is_list(result[30_000_142])
     end
 
     test "respects batch_size parameter with mock data" do
@@ -52,31 +51,37 @@ defmodule WandererKills.Subs.PreloaderTest do
   end
 
   describe "preload_kills_for_characters/2" do
-    test "returns empty list for empty character_ids" do
-      assert [] = Preloader.preload_kills_for_characters([])
+    test "returns empty map for empty character_ids" do
+      result = Preloader.preload_kills_for_characters([])
+      assert is_map(result)
+      assert result == %{"kills" => []}
     end
 
     test "handles invalid character IDs gracefully" do
       # Negative character IDs should be handled gracefully
-      batches = Preloader.preload_kills_for_characters([-1, -999])
+      result = Preloader.preload_kills_for_characters([-1, -999])
 
-      # Should return empty batches (not raise an error)
-      assert is_list(batches)
+      # Should return empty kills (not raise an error)
+      assert is_map(result)
+      assert result == %{"kills" => []}
     end
 
     test "validates days parameter within 1-90 range" do
       # Test that days parameter is properly clamped
       # days = 0 should be clamped to 1
-      batches = Preloader.preload_kills_for_characters([12_345], days: 0)
-      assert is_list(batches)
+      result = Preloader.preload_kills_for_characters([12_345], days: 0)
+      assert is_map(result)
+      assert result == %{"kills" => []}
 
       # days = 120 should be clamped to 90
-      batches = Preloader.preload_kills_for_characters([12_345], days: 120)
-      assert is_list(batches)
+      result = Preloader.preload_kills_for_characters([12_345], days: 120)
+      assert is_map(result)
+      assert Map.has_key?(result, "kills")
 
       # days = -5 should be clamped to 1
-      batches = Preloader.preload_kills_for_characters([12_345], days: -5)
-      assert is_list(batches)
+      result = Preloader.preload_kills_for_characters([12_345], days: -5)
+      assert is_map(result)
+      assert result == %{"kills" => []}
     end
 
     test "handles kill count exactly matching batch size" do
@@ -103,18 +108,22 @@ defmodule WandererKills.Subs.PreloaderTest do
   describe "preload_kills_for_systems/2 edge cases" do
     test "handles invalid system IDs gracefully" do
       # Test with invalid system IDs
-      batches = Preloader.preload_kills_for_systems([-1, 0, 999_999_999])
+      result = Preloader.preload_kills_for_systems([-1, 0, 999_999_999])
 
-      # Should return empty batches (not raise an error)
-      assert is_list(batches)
+      # Should return a map with empty lists (not raise an error)
+      assert is_map(result)
+      assert result[-1] == []
+      assert result[0] == []
+      assert result[999_999_999] == []
     end
 
     test "handles invalid options gracefully" do
       # Test with invalid option values
-      batches = Preloader.preload_kills_for_systems([30_000_142], days: -10, batch_size: 0)
+      result = Preloader.preload_kills_for_systems([30_000_142], days: -10, batch_size: 0)
 
       # Should handle gracefully with defaults
-      assert is_list(batches)
+      assert is_map(result)
+      assert Map.has_key?(result, 30_000_142)
     end
 
     test "validates days parameter edge cases" do
@@ -122,16 +131,16 @@ defmodule WandererKills.Subs.PreloaderTest do
       valid_systems = [30_000_142]
 
       # days = 1 (minimum)
-      batches = Preloader.preload_kills_for_systems(valid_systems, days: 1)
-      assert is_list(batches)
+      result = Preloader.preload_kills_for_systems(valid_systems, days: 1)
+      assert is_map(result)
 
       # days = 90 (maximum)
-      batches = Preloader.preload_kills_for_systems(valid_systems, days: 90)
-      assert is_list(batches)
+      result = Preloader.preload_kills_for_systems(valid_systems, days: 90)
+      assert is_map(result)
 
       # days = 91 (should be clamped to 90)
-      batches = Preloader.preload_kills_for_systems(valid_systems, days: 91)
-      assert is_list(batches)
+      result = Preloader.preload_kills_for_systems(valid_systems, days: 91)
+      assert is_map(result)
     end
   end
 end

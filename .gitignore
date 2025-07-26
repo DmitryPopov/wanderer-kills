@@ -34,3 +34,4 @@ logs.txt
 # Temporary files, for example, from tests.
 /tmp/
 .claude
+node_modules/

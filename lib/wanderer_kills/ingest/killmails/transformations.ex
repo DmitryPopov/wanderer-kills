@@ -415,7 +415,7 @@ defmodule WandererKills.Ingest.Killmails.Transformations do
   defp get_ship_from_cache(ship_type_id) do
     case Info.get_ship_type(ship_type_id) do
       {:ok, ship_data} -> extract_ship_name(ship_data)
-      error -> error
+      {:error, _} = error -> error
     end
   end
 
@@ -430,10 +430,6 @@ defmodule WandererKills.Ingest.Killmails.Transformations do
       _ ->
         {:error, Error.ship_types_error(:invalid_ship_data, "Ship data missing name field")}
     end
-  end
-
-  defp extract_ship_name(_invalid_data) do
-    {:error, Error.ship_types_error(:invalid_ship_data, "Invalid ship data format")}
   end
 
   # Fallback to ESI if not found in cache

@@ -1,305 +1,250 @@
 # Elixir Client Guide for WandererKills
 
-This guide provides comprehensive documentation for integrating with the WandererKills API using Elixir, including WebSocket/SSE real-time connections using Slipstream.
+This guide provides comprehensive documentation for integrating with the WandererKills API using Elixir, including WebSocket/SSE real-time connections.
 
 ## Table of Contents
 
 1. [Installation](#installation)
-2. [Type-Safe Client Library](#type-safe-client-library)
-3. [WebSocket Integration with Slipstream](#websocket-integration-with-slipstream)
+2. [HTTP API Integration](#http-api-integration)
+3. [WebSocket Integration](#websocket-integration)
 4. [Server-Sent Events (SSE)](#server-sent-events-sse)
-5. [Advanced Patterns](#advanced-patterns)
-6. [Error Handling](#error-handling)
-7. [Testing](#testing)
+5. [PubSub Integration](#pubsub-integration)
+6. [Advanced Patterns](#advanced-patterns)
+7. [Error Handling](#error-handling)
+8. [Testing](#testing)
 
 ## Installation
 
-### Using the Built-in Client Library
-
-The WandererKills codebase includes a type-safe client that implements behaviours for compile-time safety:
+### Dependencies
 
 ```elixir
 # In your mix.exs
 defp deps do
   [
-    {:wanderer_kills_client, git: "https://github.com/wanderer-industries/wanderer-kills.git", 
-     sparse: "client", branch: "main"}
+    {:req, "~> 0.5"},        # For HTTP API calls
+    {:phoenix_client, "~> 0.3"},  # For WebSocket connections
+    {:jason, "~> 1.4"},      # JSON parsing
+    {:sse_client, "~> 1.0"}  # For Server-Sent Events (optional)
   ]
 end
 ```
-
-### For WebSocket Support with Slipstream
-
-```elixir
-defp deps do
-  [
-    {:slipstream, "~> 1.1"},
-    {:jason, "~> 1.4"},
-    {:req, "~> 0.5"}  # For HTTP requests
-  ]
-end
-```
-
-## Type-Safe Client Library
-
-The WandererKills project provides a type-safe client through behaviours. Here's how to use it:
 
 ### Configuration
 
 ```elixir
 # config/config.exs
-config :wanderer_kills_client,
-  base_url: "https://kills.wanderer.com",
+config :my_app, :wanderer_kills,
+  base_url: "http://localhost:4004",
+  ws_url: "ws://localhost:4004/socket",
   timeout: 30_000
 ```
 
-### Basic Usage
+## HTTP API Integration
+
+### Basic HTTP Client
 
 ```elixir
-defmodule MyApp.KillmailService do
-  alias WandererKills.Core.Client
-  
+defmodule MyApp.WandererClient do
+  @base_url Application.compile_env(:my_app, [:wanderer_kills, :base_url])
+
   # Fetch killmails for a single system
-  def get_system_kills(system_id, hours \\ 24) do
-    case Client.fetch_system_killmails(system_id, hours, 100) do
-      {:ok, killmails} -> 
-        # Process killmails
-        Enum.map(killmails, &process_killmail/1)
-      
-      {:error, %{type: type, message: message}} ->
-        Logger.error("Failed to fetch kills: #{type} - #{message}")
-        []
-    end
+  def get_system_kills(system_id, opts \\ []) do
+    since_hours = Keyword.get(opts, :since_hours, 24)
+    limit = Keyword.get(opts, :limit, 50)
+    
+    Req.get("#{@base_url}/api/v1/kills/system/#{system_id}",
+      params: %{since_hours: since_hours, limit: limit}
+    )
   end
-  
-  # Fetch killmails for multiple systems
-  def get_multiple_system_kills(system_ids) do
-    case Client.fetch_systems_killmails(system_ids, 24, 50) do
-      {:ok, results} ->
-        # Results is a map of %{system_id => [killmails]}
-        results
-      
-      {:error, error} ->
-        %{}
-    end
+
+  # Bulk fetch multiple systems
+  def get_systems_kills(system_ids, opts \\ []) do
+    body = %{
+      system_ids: system_ids,
+      since_hours: Keyword.get(opts, :since_hours, 24),
+      limit: Keyword.get(opts, :limit, 50)
+    }
+    
+    Req.post("#{@base_url}/api/v1/kills/systems", json: body)
   end
-  
-  # Get a specific killmail
+
+  # Get specific killmail
   def get_killmail(killmail_id) do
-    Client.get_killmail(killmail_id)
+    Req.get("#{@base_url}/api/v1/killmail/#{killmail_id}")
   end
-  
-  # Subscribe to real-time updates
-  def subscribe_to_systems(subscriber_id, system_ids, callback_url \\ nil) do
-    case Client.subscribe_to_killmails(subscriber_id, system_ids, callback_url) do
-      {:ok, subscription_id} ->
-        Logger.info("Subscribed with ID: #{subscription_id}")
-        {:ok, subscription_id}
-      
-      {:error, error} ->
-        Logger.error("Subscription failed: #{inspect(error)}")
-        {:error, error}
-    end
+
+  # Create webhook subscription
+  def create_subscription(subscriber_id, system_ids, character_ids, callback_url) do
+    body = %{
+      subscriber_id: subscriber_id,
+      system_ids: system_ids,
+      character_ids: character_ids,
+      callback_url: callback_url
+    }
+    
+    Req.post("#{@base_url}/api/v1/subscriptions", json: body)
   end
 end
 ```
 
-## WebSocket Integration with Slipstream
+### Usage Example
 
-Slipstream provides a robust WebSocket client for Elixir. Here's a complete implementation:
+```elixir
+# Get kills for Jita
+{:ok, %{body: %{"data" => data}}} = MyApp.WandererClient.get_system_kills(30000142)
+
+# Bulk fetch multiple systems
+system_ids = [30000142, 30000144, 30000145]  # Jita, Perimeter, Urlen
+{:ok, %{body: %{"data" => %{"systems_kills" => results}}}} = 
+  MyApp.WandererClient.get_systems_kills(system_ids, since_hours: 12)
+
+# Subscribe to webhook notifications
+{:ok, %{body: %{"data" => %{"subscription_id" => sub_id}}}} = 
+  MyApp.WandererClient.create_subscription(
+    "my-service",
+    [30000142],
+    [95465499],
+    "https://myapp.com/webhooks/killmails"
+  )
+```
+
+## WebSocket Integration
+
+### Using Phoenix Channels Client
 
 ### Basic WebSocket Client
 
 ```elixir
 defmodule MyApp.KillmailSocket do
-  use Slipstream
-  
+  use GenServer
   require Logger
   
-  @url "wss://kills.wanderer.com/socket/websocket"
+  @url Application.compile_env(:my_app, [:wanderer_kills, :ws_url])
   
-  def start_link(config) do
-    Slipstream.start_link(__MODULE__, config, name: __MODULE__)
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
   
   @impl true
-  def init(config) do
-    {:ok, socket} = connect(config)
-    {:ok, socket}
+  def init(opts) do
+    send(self(), :connect)
+    {:ok, %{opts: opts, socket: nil, channels: []}}
   end
   
   @impl true
-  def handle_connect(socket) do
-    Logger.info("Connected to WandererKills WebSocket")
-    
-    # Join killmail updates channel for specific systems
-    systems = socket.assigns.systems
-    
-    Enum.each(systems, fn system_id ->
-      {:ok, _ref} = join(socket, "killmail:#{system_id}")
-    end)
-    
-    {:ok, socket}
-  end
-  
-  @impl true
-  def handle_disconnect(_reason, socket) do
-    Logger.warning("Disconnected from WandererKills WebSocket")
-    
-    # Implement exponential backoff
-    Process.sleep(socket.assigns[:retry_delay] || 1_000)
-    
-    socket = 
-      socket
-      |> assign(:retry_delay, min((socket.assigns[:retry_delay] || 1_000) * 2, 30_000))
-    
-    {:ok, socket} = reconnect(socket)
-    {:ok, socket}
-  end
-  
-  @impl true
-  def handle_join("killmail:" <> system_id, _reply, socket) do
-    Logger.info("Joined killmail channel for system #{system_id}")
-    {:ok, socket}
-  end
-  
-  @impl true
-  def handle_message("killmail:" <> system_id, "new_killmail", payload, socket) do
-    # Handle new killmail
-    handle_new_killmail(system_id, payload, socket)
-    {:ok, socket}
-  end
-  
-  @impl true
-  def handle_message("killmail:" <> system_id, "killmail_count", %{"count" => count}, socket) do
-    # Handle killmail count update
-    Logger.debug("System #{system_id} has #{count} killmails")
-    {:ok, socket}
-  end
-  
-  # Helper to connect with proper configuration
-  defp connect(config) do
-    socket = 
-      new_socket()
-      |> assign(:systems, config[:systems] || [])
-      |> assign(:callbacks, config[:callbacks] || %{})
-    
-    uri = URI.parse(@url)
-    
-    connect_opts = [
-      uri: uri,
-      headers: config[:headers] || [],
-      mint_opts: [
-        protocols: [:http1],
-        transport_opts: [
-          timeout: 30_000,
-          nodelay: true
-        ]
-      ]
-    ]
-    
-    connect(socket, connect_opts)
-  end
-  
-  defp handle_new_killmail(system_id, killmail, socket) do
-    Logger.debug("New killmail in system #{system_id}: #{killmail["killmail_id"]}")
-    
-    # Call registered callback if exists
-    if callback = get_in(socket.assigns, [:callbacks, :on_killmail]) do
-      callback.({system_id, killmail})
+  def handle_info(:connect, state) do
+    case PhoenixClient.Socket.start_link(@url, params: %{client_id: "my-app"}) do
+      {:ok, socket} ->
+        # Join the lobby channel with subscriptions
+        channel_params = %{
+          systems: state.opts[:systems] || [],
+          character_ids: state.opts[:character_ids] || [],
+          preload: %{
+            enabled: true,
+            limit_per_system: 50,
+            since_hours: 24
+          }
+        }
+        
+        {:ok, _ref, channel} = PhoenixClient.Channel.join(socket, "killmails:lobby", channel_params)
+        
+        # Set up event handlers
+        PhoenixClient.Channel.on(channel, "killmail_update", &handle_killmail_update/1)
+        PhoenixClient.Channel.on(channel, "kill_count_update", &handle_kill_count_update/1)
+        
+        {:noreply, %{state | socket: socket, channels: [channel]}}
+        
+      {:error, reason} ->
+        Logger.error("Failed to connect: #{inspect(reason)}")
+        Process.send_after(self(), :connect, 5_000)
+        {:noreply, state}
     end
-    
-    # You can also broadcast to other parts of your app
-    Phoenix.PubSub.broadcast(
-      MyApp.PubSub,
-      "killmails:#{system_id}",
-      {:new_killmail, killmail}
-    )
+  end
+  
+  defp handle_killmail_update(payload) do
+    Logger.info("Received #{length(payload["killmails"])} kills for system #{payload["system_id"]}")
+    # Process killmails
+    Enum.each(payload["killmails"], &process_killmail/1)
+  end
+  
+  defp handle_kill_count_update(payload) do
+    Logger.debug("System #{payload["system_id"]} has #{payload["count"]} kills")
+  end
+  
+  defp process_killmail(killmail) do
+    # Your killmail processing logic here
+    :ok
   end
 end
 ```
 
-### Advanced WebSocket Features
+### Dynamic Subscription Management
 
 ```elixir
-defmodule MyApp.KillmailSocketSupervisor do
-  use Supervisor
-  
-  def start_link(init_arg) do
-    Supervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
-  end
-  
-  @impl true
-  def init(_init_arg) do
-    children = [
-      {MyApp.KillmailSocket, socket_config()}
-    ]
-    
-    Supervisor.init(children, strategy: :one_for_one)
-  end
-  
-  defp socket_config do
-    %{
-      systems: [30000142, 30000143, 30000144],  # Jita, Amarr, Dodixie
-      headers: [{"x-api-key", api_key()}],
-      callbacks: %{
-        on_killmail: &MyApp.KillmailProcessor.process/1,
-        on_error: &MyApp.ErrorHandler.handle_socket_error/1
-      }
-    }
-  end
-  
-  defp api_key do
-    Application.get_env(:my_app, :wanderer_api_key)
-  end
-end
-
-# Channel-specific subscriptions
-defmodule MyApp.ChannelManager do
+defmodule MyApp.KillmailManager do
   use GenServer
   
-  def start_link(_) do
-    GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
   
-  def subscribe_to_system(system_id) do
-    GenServer.call(__MODULE__, {:subscribe, system_id})
-  end
-  
-  def unsubscribe_from_system(system_id) do
-    GenServer.call(__MODULE__, {:unsubscribe, system_id})
-  end
-  
-  @impl true
-  def handle_call({:subscribe, system_id}, _from, state) do
-    # Send join message through Slipstream
-    MyApp.KillmailSocket.join("killmail:#{system_id}")
-    
-    state = Map.update(state, :subscriptions, [system_id], &[system_id | &1])
-    {:reply, :ok, state}
+  def update_subscriptions(add_systems, remove_systems, add_characters, remove_characters) do
+    GenServer.call(__MODULE__, {
+      :update_subscriptions, 
+      %{
+        add_systems: add_systems,
+        remove_systems: remove_systems,
+        add_characters: add_characters,
+        remove_characters: remove_characters
+      }
+    })
   end
   
   @impl true
-  def handle_call({:unsubscribe, system_id}, _from, state) do
-    # Send leave message through Slipstream
-    MyApp.KillmailSocket.leave("killmail:#{system_id}")
-    
-    subscriptions = Map.get(state, :subscriptions, []) -- [system_id]
-    state = Map.put(state, :subscriptions, subscriptions)
-    {:reply, :ok, state}
+  def init(opts) do
+    {:ok, %{
+      channel: opts[:channel],
+      systems: [],
+      characters: []
+    }}
+  end
+  
+  @impl true
+  def handle_call({:update_subscriptions, params}, _from, state) do
+    # Push subscription update to the channel
+    case PhoenixClient.Channel.push(state.channel, "update_subscriptions", params) do
+      {:ok, _ref} ->
+        # Update local state
+        new_state = %{
+          state |
+          systems: update_list(state.systems, params.add_systems, params.remove_systems),
+          characters: update_list(state.characters, params.add_characters, params.remove_characters)
+        }
+        {:reply, :ok, new_state}
+        
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+  
+  defp update_list(current, add, remove) do
+    current
+    |> Enum.concat(add || [])
+    |> Enum.uniq()
+    |> Enum.reject(&(&1 in (remove || [])))
   end
 end
 ```
 
 ## Server-Sent Events (SSE)
 
-For SSE connections, you can use Req with streaming support:
+SSE provides a simpler alternative to WebSocket for server-to-client streaming:
 
 ```elixir
 defmodule MyApp.SSEClient do
   require Logger
   
-  @base_url "https://kills.wanderer.com"
+  @base_url Application.compile_env(:my_app, [:wanderer_kills, :base_url])
   
   def stream_killmails(filters \\ %{}) do
     url = build_sse_url(filters)
@@ -315,7 +260,7 @@ defmodule MyApp.SSEClient do
   
   defp build_sse_url(filters) do
     query = URI.encode_query(filters)
-    "#{@base_url}/api/sse/killmails?#{query}"
+    "#{@base_url}/api/v1/kills/stream?#{query}"
   end
   
   defp handle_sse_data(data) do
@@ -329,7 +274,7 @@ defmodule MyApp.SSEClient do
       {:ok, killmail} ->
         Logger.debug("Received killmail: #{killmail["killmail_id"]}")
         # Process the killmail
-        MyApp.KillmailProcessor.process(killmail)
+        process_killmail(killmail)
       
       {:error, _} ->
         Logger.error("Failed to parse SSE data: #{json}")
@@ -341,45 +286,126 @@ defmodule MyApp.SSEClient do
   end
   
   defp process_sse_line(_), do: :ok
+  
+  defp process_killmail(killmail) do
+    # Your processing logic here
+    :ok
+  end
 end
 
-# GenServer wrapper for continuous streaming
-defmodule MyApp.SSEStreamServer do
+### Enhanced SSE with Character Preloading
+
+```elixir
+defmodule MyApp.EnhancedSSEClient do
   use GenServer
+  require Logger
   
-  def start_link(filters) do
-    GenServer.start_link(__MODULE__, filters, name: __MODULE__)
+  @base_url Application.compile_env(:my_app, [:wanderer_kills, :base_url])
+  
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
   
   @impl true
-  def init(filters) do
-    send(self(), :start_stream)
-    {:ok, %{filters: filters, task: nil}}
+  def init(opts) do
+    send(self(), :connect)
+    {:ok, %{opts: opts, task: nil}}
   end
   
   @impl true
-  def handle_info(:start_stream, state) do
+  def handle_info(:connect, state) do
+    # Build URL with enhanced endpoint
+    params = %{
+      character_ids: Enum.join(state.opts[:character_ids] || [], ","),
+      system_ids: Enum.join(state.opts[:system_ids] || [], ","),
+      preload_days: state.opts[:preload_days] || 30
+    }
+    
+    url = "#{@base_url}/api/v1/kills/stream/enhanced?#{URI.encode_query(params)}"
+    
     task = Task.async(fn ->
-      MyApp.SSEClient.stream_killmails(state.filters)
+      Req.get!(url,
+        receive_timeout: :infinity,
+        into: &handle_sse_chunk/2
+      )
     end)
     
     {:noreply, %{state | task: task}}
   end
   
-  @impl true
-  def handle_info({ref, _result}, state) when is_reference(ref) do
-    # Stream ended, restart after delay
-    Process.sleep(5_000)
-    send(self(), :start_stream)
-    {:noreply, %{state | task: nil}}
+  defp handle_sse_chunk({:data, data}, acc) do
+    data
+    |> String.split("\n")
+    |> Enum.each(fn line ->
+      case parse_sse_line(line) do
+        {:event, "batch", data} ->
+          Logger.info("Historical batch #{data["batch_number"]}/#{data["total_batches"]}")
+          Enum.each(data["kills"], &process_killmail/1)
+          
+        {:event, "transition", data} ->
+          Logger.info("Transitioned to realtime mode after #{data["total_historical"]} historical kills")
+          
+        {:event, "killmail", killmail} ->
+          process_killmail(killmail)
+          
+        _ -> :ok
+      end
+    end)
+    
+    {:cont, acc}
   end
   
+  defp parse_sse_line("event: " <> event), do: {:event_type, event}
+  defp parse_sse_line("data: " <> json) do
+    case Jason.decode(json) do
+      {:ok, data} -> {:event, "killmail", data}
+      _ -> :error
+    end
+  end
+  defp parse_sse_line(_), do: :skip
+  
+  defp process_killmail(killmail) do
+    # Your processing logic
+    :ok
+  end
+end
+```
+
+## PubSub Integration
+
+For Elixir applications in the same cluster:
+
+```elixir
+defmodule MyApp.KillmailListener do
+  use GenServer
+  require Logger
+
+  def start_link(_) do
+    GenServer.start_link(__MODULE__, nil, name: __MODULE__)
+  end
+
   @impl true
-  def handle_info({:DOWN, _ref, :process, _pid, reason}, state) do
-    Logger.error("SSE stream crashed: #{inspect(reason)}")
-    Process.sleep(10_000)
-    send(self(), :start_stream)
-    {:noreply, %{state | task: nil}}
+  def init(_) do
+    # Subscribe to specific systems
+    Phoenix.PubSub.subscribe(WandererKills.PubSub, "killmails:system:30000142")
+    
+    # Subscribe to specific characters
+    Phoenix.PubSub.subscribe(WandererKills.PubSub, "killmails:character:95465499")
+    
+    {:ok, %{}}
+  end
+
+  @impl true
+  def handle_info({:killmail, killmail}, state) do
+    Logger.info("New killmail: #{killmail.killmail_id}")
+    # Process killmail
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:kill_count_update, %{system_id: system_id, count: count}}, state) do
+    Logger.info("System #{system_id} now has #{count} kills")
+    {:noreply, state}
   end
 end
 ```
@@ -389,199 +415,166 @@ end
 ### Connection Pooling for HTTP Requests
 
 ```elixir
-defmodule MyApp.KillmailAPIPool do
-  use GenServer
+defmodule MyApp.ConnectionPool do
+  @moduledoc """  
+  Connection pool using Finch for efficient HTTP requests
+  """
   
-  @pool_size 5
-  @base_url "https://kills.wanderer.com"
-  
-  def start_link(_) do
-    GenServer.start_link(__MODULE__, nil, name: __MODULE__)
-  end
-  
-  def request(method, path, body \\ nil) do
-    GenServer.call(__MODULE__, {:request, method, path, body})
-  end
-  
-  @impl true
-  def init(_) do
-    # Initialize connection pool
-    {:ok, conn_pid} = Finch.start_link(
-      name: MyApp.Finch,
+  def child_spec(_opts) do
+    base_uri = URI.parse(base_url())
+    port = base_uri.port || get_default_port(base_uri.scheme)
+    
+    Finch.child_spec(
+      name: __MODULE__,
       pools: %{
-        {@base_url, :https} => [size: @pool_size, count: 1]
+        default: [size: 10, count: 1],
+        # Specific pool for WandererKills API
+        {base_uri.host, port} => [
+          size: 5,
+          count: 1,
+          conn_opts: [keepalive: :timer.minutes(5)]
+        ]
       }
     )
-    
-    {:ok, %{finch: MyApp.Finch}}
   end
   
-  @impl true
-  def handle_call({:request, method, path, body}, _from, state) do
-    url = "#{@base_url}#{path}"
+  def request(method, url, headers \\ [], body \\ nil) do
+    request = Finch.build(method, url, headers, body)
     
-    request = Finch.build(method, url, headers(), body)
-    
-    result = case Finch.request(request, state.finch) do
+    case Finch.request(request, __MODULE__) do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
-        {:ok, Jason.decode!(body)}
-      
+        Jason.decode(body)
+        
       {:ok, %{status: status, body: body}} ->
         {:error, %{status: status, body: body}}
-      
+        
       {:error, reason} ->
         {:error, reason}
     end
-    
-    {:reply, result, state}
   end
   
-  defp headers do
-    [
-      {"content-type", "application/json"},
-      {"accept", "application/json"},
-      {"user-agent", "MyApp/1.0"}
-    ]
+  defp base_url do
+    Application.get_env(:my_app, [:wanderer_kills, :base_url])
   end
+  
+  defp get_default_port("http"), do: 80
+  defp get_default_port("https"), do: 443
+  defp get_default_port(_), do: 80
 end
 ```
 
-### Caching Layer
+### Local Caching with ETS
 
 ```elixir
-defmodule MyApp.KillmailCache do
+defmodule MyApp.LocalCache do
+  @moduledoc """
+  Local ETS cache following WandererKills' 4-namespace pattern
+  """
   use GenServer
   
-  @cache_ttl :timer.minutes(5)
-  @max_cache_size 10_000
+  @namespaces %{
+    killmails: :timer.minutes(5),
+    systems: :timer.hours(1),
+    esi_data: :timer.hours(24),
+    temp_data: :timer.minutes(5)
+  }
   
   def start_link(_) do
     GenServer.start_link(__MODULE__, nil, name: __MODULE__)
   end
   
-  def get_or_fetch(killmail_id, fetch_fn) do
-    case get(killmail_id) do
-      nil ->
-        case fetch_fn.() do
-          {:ok, killmail} ->
-            put(killmail_id, killmail)
-            {:ok, killmail}
-          
-          error ->
-            error
+  def get(namespace, key) do
+    case :ets.lookup(table_name(namespace), key) do
+      [{^key, value, expiry}] ->
+        if DateTime.compare(DateTime.utc_now(), expiry) == :lt do
+          {:ok, value}
+        else
+          :ets.delete(table_name(namespace), key)
+          {:error, :not_found}
         end
-      
-      killmail ->
-        {:ok, killmail}
+      [] ->
+        {:error, :not_found}
     end
   end
   
-  def get(killmail_id) do
-    GenServer.call(__MODULE__, {:get, killmail_id})
-  end
-  
-  def put(killmail_id, killmail) do
-    GenServer.cast(__MODULE__, {:put, killmail_id, killmail})
+  def put(namespace, key, value) do
+    ttl = Map.get(@namespaces, namespace, :timer.minutes(5))
+    expiry = DateTime.add(DateTime.utc_now(), ttl, :millisecond)
+    :ets.insert(table_name(namespace), {key, value, expiry})
+    :ok
   end
   
   @impl true
   def init(_) do
-    :ets.new(:killmail_cache, [:set, :named_table, :public, read_concurrency: true])
+    tables = for {namespace, _ttl} <- @namespaces do
+      table = table_name(namespace)
+      :ets.new(table, [:set, :named_table, :public, read_concurrency: true])
+      table
+    end
+    
     schedule_cleanup()
-    {:ok, %{}}
-  end
-  
-  @impl true
-  def handle_call({:get, killmail_id}, _from, state) do
-    result = case :ets.lookup(:killmail_cache, killmail_id) do
-      [{^killmail_id, killmail, expiry}] ->
-        if DateTime.compare(DateTime.utc_now(), expiry) == :lt do
-          killmail
-        else
-          :ets.delete(:killmail_cache, killmail_id)
-          nil
-        end
-      
-      [] ->
-        nil
-    end
-    
-    {:reply, result, state}
-  end
-  
-  @impl true
-  def handle_cast({:put, killmail_id, killmail}, state) do
-    expiry = DateTime.add(DateTime.utc_now(), @cache_ttl, :millisecond)
-    :ets.insert(:killmail_cache, {killmail_id, killmail, expiry})
-    
-    # Evict old entries if cache is too large
-    if :ets.info(:killmail_cache, :size) > @max_cache_size do
-      evict_oldest()
-    end
-    
-    {:noreply, state}
+    {:ok, %{tables: tables}}
   end
   
   @impl true
   def handle_info(:cleanup, state) do
-    cleanup_expired()
+    Enum.each(state.tables, &cleanup_table/1)
     schedule_cleanup()
     {:noreply, state}
   end
   
+  defp table_name(namespace), do: :"#{__MODULE__}_#{namespace}"
+  
+  defp cleanup_table(table) do
+    now = DateTime.utc_now()
+    :ets.select_delete(table, [{{:_, :_, :"$1"}, [{:<, :"$1", now}], [true]}])
+  end
+  
   defp schedule_cleanup do
     Process.send_after(self(), :cleanup, :timer.minutes(1))
-  end
-  
-  defp cleanup_expired do
-    now = DateTime.utc_now()
-    
-    :ets.select_delete(:killmail_cache, [
-      {
-        {:"$1", :"$2", :"$3"},
-        [{:<, :"$3", now}],
-        [true]
-      }
-    ])
-  end
-  
-  defp evict_oldest do
-    # Simple FIFO eviction
-    case :ets.first(:killmail_cache) do
-      :"$end_of_table" -> :ok
-      key -> :ets.delete(:killmail_cache, key)
-    end
   end
 end
 ```
 
 ## Error Handling
 
-### Comprehensive Error Handling
+### Standardized Error Handling
 
 ```elixir
-defmodule MyApp.KillmailErrorHandler do
+defmodule MyApp.ErrorHandler do
+  @moduledoc """
+  Error handling following WandererKills' standardized error patterns
+  """
   require Logger
   
-  def handle_api_error({:error, %{type: :rate_limit, retry_after: retry_after}}) do
+  # Handle standardized WandererKills API errors
+  def handle_api_error({:ok, %{status: 429} = response}) do
+    retry_after = get_retry_after(response.headers)
     Logger.warning("Rate limited, retrying after #{retry_after}ms")
     Process.sleep(retry_after)
     :retry
   end
   
-  def handle_api_error({:error, %{type: :timeout}}) do
-    Logger.error("Request timeout")
-    {:error, :timeout}
+  def handle_api_error({:ok, %{status: status}}) when status >= 500 do
+    Logger.error("Server error: #{status}")
+    {:error, :server_error}
   end
   
-  def handle_api_error({:error, %{type: :validation_error, message: message}}) do
-    Logger.error("Validation error: #{message}")
-    {:error, :invalid_request}
-  end
-  
-  def handle_api_error({:error, %{type: :not_found}}) do
-    Logger.debug("Resource not found")
+  def handle_api_error({:ok, %{status: 404}}) do
     {:error, :not_found}
+  end
+  
+  def handle_api_error({:ok, %{status: 400, body: body}}) do
+    case Jason.decode(body) do
+      {:ok, %{"error" => error, "code" => code}} ->
+        {:error, %{type: String.to_atom(code), message: error}}
+      _ ->
+        {:error, :bad_request}
+    end
+  end
+  
+  def handle_api_error({:error, %Mint.TransportError{reason: :timeout}}) do
+    {:error, :timeout}
   end
   
   def handle_api_error({:error, reason}) do
@@ -589,30 +582,33 @@ defmodule MyApp.KillmailErrorHandler do
     {:error, :unknown}
   end
   
+  # Retry logic with exponential backoff
   def with_retry(func, opts \\ []) do
     max_attempts = Keyword.get(opts, :max_attempts, 3)
-    delay = Keyword.get(opts, :initial_delay, 1_000)
+    base_delay = Keyword.get(opts, :base_delay, 1_000)
     
-    do_with_retry(func, max_attempts, delay, 1)
+    do_with_retry(func, max_attempts, base_delay, 1)
   end
   
   defp do_with_retry(func, max_attempts, delay, attempt) do
     case func.() do
-      {:ok, result} ->
-        {:ok, result}
-      
+      {:ok, _} = success -> success
       {:error, _} = error when attempt < max_attempts ->
         case handle_api_error(error) do
           :retry ->
             Process.sleep(delay)
             do_with_retry(func, max_attempts, delay * 2, attempt + 1)
-          
           other ->
             other
         end
-      
-      error ->
-        error
+      error -> error
+    end
+  end
+  
+  defp get_retry_after(headers) do
+    case List.keyfind(headers, "retry-after", 0) do
+      {_, value} -> String.to_integer(value) * 1000
+      nil -> 60_000  # Default to 1 minute
     end
   end
 end
@@ -620,41 +616,58 @@ end
 
 ## Testing
 
-### Mocking the Client Behaviour
+### Testing HTTP API Calls
 
 ```elixir
-# test/support/mocks.ex
-Mox.defmock(MyApp.MockKillmailClient, for: WandererKills.Core.ClientBehaviour)
-
-# test/my_app/killmail_service_test.exs
-defmodule MyApp.KillmailServiceTest do
+# test/my_app/wanderer_client_test.exs
+defmodule MyApp.WandererClientTest do
   use ExUnit.Case, async: true
   
-  import Mox
+  alias MyApp.WandererClient
   
-  alias MyApp.KillmailService
+  # Using Bypass for HTTP mocking
+  setup do
+    bypass = Bypass.open()
+    Application.put_env(:my_app, [:wanderer_kills, :base_url], "http://localhost:#{bypass.port}")
+    {:ok, bypass: bypass}
+  end
   
-  setup :verify_on_exit!
-  
-  test "fetches system killmails successfully" do
+  test "fetches system killmails successfully", %{bypass: bypass} do
     killmails = [
       %{"killmail_id" => 123, "solar_system_id" => 30000142},
       %{"killmail_id" => 124, "solar_system_id" => 30000142}
     ]
     
-    expect(MyApp.MockKillmailClient, :fetch_system_killmails, fn 30000142, 24, 100 ->
-      {:ok, killmails}
+    Bypass.expect_once(bypass, "GET", "/api/v1/kills/system/30000142", fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.resp(200, Jason.encode!(%{"data" => %{"kills" => killmails}}))
     end)
     
-    assert {:ok, ^killmails} = KillmailService.get_system_kills(30000142)
+    assert {:ok, %{body: %{"data" => %{"kills" => ^killmails}}}} = 
+      WandererClient.get_system_kills(30000142)
   end
   
-  test "handles API errors gracefully" do
-    expect(MyApp.MockKillmailClient, :fetch_system_killmails, fn _, _, _ ->
-      {:error, %{type: :timeout, message: "Request timed out"}}
+  test "handles rate limiting with retry", %{bypass: bypass} do
+    Bypass.expect(bypass, "GET", "/api/v1/kills/system/30000142", fn conn ->
+      case Bypass.Pass.call_count(conn) do
+        1 ->
+          conn
+          |> Plug.Conn.put_resp_header("retry-after", "1")
+          |> Plug.Conn.resp(429, "Rate limited")
+        2 ->
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.resp(200, Jason.encode!(%{"data" => %{"kills" => []}}))
+      end
     end)
     
-    assert [] = KillmailService.get_system_kills(30000142)
+    # With retry handler
+    result = MyApp.ErrorHandler.with_retry(fn ->
+      WandererClient.get_system_kills(30000142)
+    end)
+    
+    assert {:ok, _} = result
   end
 end
 ```
@@ -665,50 +678,29 @@ end
 defmodule MyApp.KillmailSocketTest do
   use ExUnit.Case
   
-  import ExUnit.CaptureLog
-  
-  alias MyApp.KillmailSocket
-  
-  setup do
-    # Start a mock WebSocket server
-    {:ok, _} = MockWebSocketServer.start(port: 4001)
-    
-    on_exit(fn ->
-      MockWebSocketServer.stop()
-    end)
-    
-    :ok
-  end
-  
-  test "connects and joins channels" do
-    config = %{
+  test "processes killmail updates" do
+    # Start the socket
+    {:ok, _pid} = MyApp.KillmailSocket.start_link(
       systems: [30000142],
-      url: "ws://localhost:4001/socket/websocket"
+      character_ids: [95465499]
+    )
+    
+    # Simulate receiving a killmail update
+    # In a real test, you'd use a mock WebSocket server
+    killmail_payload = %{
+      "system_id" => 30000142,
+      "killmails" => [
+        %{
+          "killmail_id" => 123456,
+          "solar_system_id" => 30000142,
+          "kill_time" => "2024-01-15T14:30:00Z"
+        }
+      ],
+      "preload" => false
     }
     
-    {:ok, pid} = KillmailSocket.start_link(config)
-    
-    # Wait for connection
-    Process.sleep(100)
-    
-    assert Process.alive?(pid)
-    assert MockWebSocketServer.channel_joined?("killmail:30000142")
-  end
-  
-  test "handles disconnections with exponential backoff" do
-    config = %{systems: [], url: "ws://localhost:4001/socket/websocket"}
-    
-    log = capture_log(fn ->
-      {:ok, pid} = KillmailSocket.start_link(config)
-      
-      # Simulate disconnect
-      MockWebSocketServer.disconnect_client(pid)
-      
-      Process.sleep(200)
-    end)
-    
-    assert log =~ "Disconnected from WandererKills WebSocket"
-    assert log =~ "Connected to WandererKills WebSocket"
+    # Test that the killmail was processed
+    # Your assertions here based on your processing logic
   end
 end
 ```
@@ -716,11 +708,12 @@ end
 ## Best Practices
 
 1. **Connection Management**: Always implement reconnection logic with exponential backoff
-2. **Error Handling**: Use pattern matching on error tuples for specific error handling
-3. **Caching**: Implement local caching to reduce API calls
-4. **Rate Limiting**: Respect rate limits and implement client-side throttling
-5. **Monitoring**: Add telemetry and logging for debugging production issues
-6. **Testing**: Use behaviours and mocks for comprehensive testing
+2. **Error Handling**: Follow WandererKills' standardized error format
+3. **Caching**: Use 4-namespace pattern (killmails, systems, esi_data, temp_data)
+4. **Rate Limiting**: Handle 429 responses with retry-after header
+5. **Performance**: Leverage sub-10μs cache operations
+6. **Monitoring**: Use telemetry events for observability
+7. **Testing**: Use Bypass for HTTP mocking, mock channels for WebSocket
 
 ## Complete Example Application
 
@@ -733,22 +726,26 @@ defmodule MyApp.Application do
   def start(_type, _args) do
     children = [
       # HTTP connection pool
-      {Finch, name: MyApp.Finch},
+      MyApp.ConnectionPool,
       
-      # Cache
-      MyApp.KillmailCache,
+      # Local cache with 4 namespaces
+      MyApp.LocalCache,
       
-      # WebSocket supervisor
-      MyApp.KillmailSocketSupervisor,
+      # WebSocket connection
+      {MyApp.KillmailSocket, [
+        systems: [30000142, 30000143],
+        character_ids: [],
+        preload: true
+      ]},
       
-      # SSE stream (optional)
-      {MyApp.SSEStreamServer, %{
-        solar_system_id: [30000142, 30000143],
-        ship_type_id: [587, 11567]  # Rifter, Raven
-      }},
+      # Enhanced SSE stream (optional)
+      {MyApp.EnhancedSSEClient, [
+        character_ids: [95465499],
+        preload_days: 30
+      ]},
       
-      # Your app's PubSub
-      {Phoenix.PubSub, name: MyApp.PubSub}
+      # PubSub listener (if in same cluster)
+      MyApp.KillmailListener
     ]
     
     opts = [strategy: :one_for_one, name: MyApp.Supervisor]
@@ -757,4 +754,20 @@ defmodule MyApp.Application do
 end
 ```
 
-This guide provides a comprehensive approach to integrating with WandererKills using both the built-in type-safe client and Slipstream for WebSocket connections. The examples demonstrate production-ready patterns including error handling, caching, connection management, and testing strategies.
+## Summary
+
+This guide covers all integration methods for WandererKills:
+
+- **HTTP API**: RESTful endpoints with bulk operations
+- **WebSocket**: Real-time updates via Phoenix channels
+- **SSE**: Server-sent events with enhanced character preloading
+- **PubSub**: Direct integration for Elixir apps in the same cluster
+
+The simplified architecture provides:
+- Sub-10μs cache operations
+- 10,000+ concurrent WebSocket connections
+- 50,000 character subscription support
+- Standardized error handling
+- 4-namespace caching pattern
+
+For more details, see the [API & Integration Guide](API_AND_INTEGRATION_GUIDE.md).

@@ -670,18 +670,24 @@ The service provides an Elixir behaviour for type-safe integration:
 
 ```elixir
 # In your mix.exs
-{:wanderer_kills_client, github: "wanderer-industries/wanderer-kills", sparse: "client"}
+{:req, "~> 0.4"}
 
-# Usage
-alias WandererKills.Client
+# Usage - HTTP API client
+defmodule MyApp.WandererClient do
+  @base_url "http://localhost:4004"
 
-# Configure the client
-config :wanderer_kills_client,
-  base_url: "http://localhost:4004",
-  timeout: 30_000
+  def get_system_kills(system_id, opts \\ []) do
+    since_hours = Keyword.get(opts, :since_hours, 24)
+    limit = Keyword.get(opts, :limit, 50)
+    
+    Req.get("#{@base_url}/api/systems/#{system_id}/kills",
+      params: %{since_hours: since_hours, limit: limit}
+    )
+  end
+end
 
 # Fetch kills for a system
-{:ok, kills} = Client.get_system_kills(30000142, since_hours: 24, limit: 50)
+{:ok, %{body: kills}} = MyApp.WandererClient.get_system_kills(30000142, since_hours: 24, limit: 50)
 
 # Bulk fetch multiple systems
 {:ok, results} = Client.get_systems_kills([30000142, 30000144], since_hours: 24)

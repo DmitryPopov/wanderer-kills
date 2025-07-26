@@ -1,10 +1,7 @@
 defmodule WandererKills.Ingest.Historical.BasicTest do
   use ExUnit.Case
-  import Mox
 
   alias WandererKills.Ingest.Killmails.ZkbClient
-
-  setup :verify_on_exit!
 
   describe "basic functionality" do
     test "ZkbClient has fetch_history function" do

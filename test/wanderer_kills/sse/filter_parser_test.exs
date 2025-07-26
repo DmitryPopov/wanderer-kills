@@ -1,8 +1,8 @@
 defmodule WandererKills.SSE.FilterParserTest do
   use ExUnit.Case, async: true
 
-  alias WandererKills.SSE.FilterParser
   alias WandererKills.Core.Support.Error
+  alias WandererKills.SSE.FilterParser
 
   describe "parse/1" do
     test "parses empty params to default filters" do

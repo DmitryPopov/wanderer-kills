@@ -13,13 +13,14 @@ defmodule WandererKills.Ingest.RedisQ do
   require Logger
 
   alias WandererKills.Core.EtsOwner
-  alias WandererKills.Core.Support.Clock
   alias WandererKills.Core.Support.Error
+  alias WandererKills.Core.Support.Utils
   alias WandererKills.Domain.Killmail
+  alias WandererKills.Http.Client, as: HttpClient
   alias WandererKills.Ingest.ESI.Client, as: EsiClient
-  alias WandererKills.Ingest.Http.Client, as: HttpClient
   alias WandererKills.Ingest.Killmails.UnifiedProcessor
-  alias WandererKills.Subs.SubscriptionManager
+  alias WandererKills.Subs.Broadcaster
+  alias WandererKills.Subs.SimpleSubscriptionManager, as: SubscriptionManager
 
   @user_agent "(wanderer-kills@proton.me; +https://github.com/wanderer-industries/wanderer-kills)"
 
@@ -320,12 +321,20 @@ defmodule WandererKills.Ingest.RedisQ do
   #   - {:ok, :kill_skipped}
   #   - {:error, reason}
   defp do_poll(queue_id) do
-    url = "#{base_url()}?queueID=#{queue_id}&ttw=1"
-    Logger.debug("[RedisQ] GET #{url}")
+    # Use 10 second long-polling for more efficient operation
+    url = "#{base_url()}?queueID=#{queue_id}&ttw=10"
+    Logger.debug("[RedisQ] Starting poll request to: #{url}")
 
     headers = [{"user-agent", @user_agent}]
+    start_time = System.monotonic_time(:millisecond)
 
-    case HttpClient.get(url, headers) do
+    Logger.debug("[RedisQ] Making HTTP request...")
+    result = HttpClient.get(url, headers)
+    elapsed_ms = System.monotonic_time(:millisecond) - start_time
+
+    Logger.debug("[RedisQ] HTTP request completed in #{elapsed_ms}ms")
+
+    case result do
       # No package → no new kills
       {:ok, %{body: %{"package" => nil}}} ->
         Logger.debug("[RedisQ] No package received.")
@@ -527,7 +536,7 @@ defmodule WandererKills.Ingest.RedisQ do
 
   # Returns cutoff DateTime (e.g. "24 hours ago")
   defp get_cutoff_time do
-    Clock.hours_ago(1)
+    Utils.hours_ago(1)
   end
 
   defp handle_response(%{"package" => package}) do
@@ -556,7 +565,6 @@ defmodule WandererKills.Ingest.RedisQ do
     ])
 
     # Also broadcast to PubSub topics for SSE and WebSocket channels
-    alias WandererKills.Subs.Subscriptions.Broadcaster
     Broadcaster.broadcast_killmail_update(system_id, [killmail_map])
 
     # Also broadcast kill count update (increment by 1)

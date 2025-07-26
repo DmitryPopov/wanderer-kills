@@ -42,7 +42,7 @@ defmodule WandererKills.Ingest.Boundary do
       WandererKills.Ingest.Killmails.BatchProcessor,
 
       # Rate limiting
-      WandererKills.Ingest.RateLimiter,
+      WandererKills.Ingest.SmartRateLimiter,
 
       # Real-time streaming
       WandererKills.Ingest.RedisQ

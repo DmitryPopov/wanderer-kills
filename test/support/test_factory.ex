@@ -11,7 +11,7 @@ defmodule WandererKills.TestFactory do
   @doc """
   Sets up a mock HTTP client to always succeed with the given response.
   """
-  def mock_http_success(client_mock \\ WandererKills.Ingest.Http.Client.Mock, response \\ %{}) do
+  def mock_http_success(client_mock \\ WandererKills.Http.ClientMock, response \\ %{}) do
     client_mock
     |> expect(:get_with_rate_limit, fn _url, _opts ->
       {:ok, %{status: 200, body: response}}
@@ -21,7 +21,7 @@ defmodule WandererKills.TestFactory do
   @doc """
   Sets up a mock HTTP client to always return not found.
   """
-  def mock_http_not_found(client_mock \\ WandererKills.Ingest.Http.Client.Mock) do
+  def mock_http_not_found(client_mock \\ WandererKills.Http.ClientMock) do
     client_mock
     |> expect(:get_with_rate_limit, fn _url, _opts ->
       {:error, :not_found}
@@ -31,7 +31,7 @@ defmodule WandererKills.TestFactory do
   @doc """
   Sets up a mock HTTP client to always be rate limited.
   """
-  def mock_http_rate_limited(client_mock \\ WandererKills.Ingest.Http.Client.Mock) do
+  def mock_http_rate_limited(client_mock \\ WandererKills.Http.ClientMock) do
     client_mock
     |> expect(:get_with_rate_limit, fn _url, _opts ->
       {:error, :rate_limited}
@@ -48,7 +48,7 @@ defmodule WandererKills.TestFactory do
         "universe" => {:error, :timeout}
       })
   """
-  def mock_http_responses(url_responses, client_mock \\ WandererKills.Ingest.Http.Client.Mock) do
+  def mock_http_responses(url_responses, client_mock \\ WandererKills.Http.ClientMock) do
     client_mock
     |> expect(:get_with_rate_limit, fn url, _opts ->
       find_matching_response(url, url_responses)
@@ -179,5 +179,46 @@ defmodule WandererKills.TestFactory do
   def configure_fast_property_testing do
     Application.put_env(:stream_data, :max_runs, 20)
     Application.put_env(:stream_data, :max_shrinking_steps, 50)
+  end
+
+  @doc """
+  Build function for benchmark compatibility.
+  Supports :full_killmail, :partial_killmail, and :raw_killmail atoms.
+  """
+  def build(type, overrides \\ %{})
+
+  def build(:full_killmail, overrides) do
+    build_killmail(random_killmail_id(), overrides)
+  end
+
+  def build(:partial_killmail, overrides) do
+    # Partial killmail has minimal data
+    %{
+      "killmail_id" => Map.get(overrides, :killmail_id, random_killmail_id()),
+      "killmail_time" => "2024-01-01T12:00:00Z",
+      "solar_system_id" => Map.get(overrides, :solar_system_id, 30_000_142),
+      "zkb" => %{
+        "hash" => "partial_#{:rand.uniform(999_999)}"
+      }
+    }
+  end
+
+  def build(:raw_killmail, overrides) do
+    # Raw killmail is just the JSON structure without processing
+    Map.merge(
+      %{
+        "killmail_id" => random_killmail_id(),
+        "killmail_time" => "2024-01-01T12:00:00Z",
+        "solar_system_id" => 30_000_142,
+        "victim" => %{
+          "character_id" => 95_465_499,
+          "ship_type_id" => 587
+        },
+        "attackers" => [
+          %{"character_id" => 95_465_500}
+        ]
+      },
+      overrides
+    )
   end
 end

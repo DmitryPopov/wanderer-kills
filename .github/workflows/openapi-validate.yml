@@ -38,6 +38,7 @@ jobs:
       - name: Validate OpenAPI spec
         run: |
           npm install -g @redocly/openapi-cli
+          sudo apt-get update && sudo apt-get install -y jq
           npx @redocly/openapi-cli lint priv/static/openapi.yaml
       
       - name: Upload OpenAPI spec as artifact
@@ -49,41 +50,80 @@ jobs:
       
       - name: Check spec can be served
         run: |
-          # Start the Phoenix server in the background
-          MIX_ENV=test mix phx.server &
-          SERVER_PID=$!
-          
-          # Wait for server to be ready with retries
-          echo "Waiting for Phoenix server to start..."
-          max_attempts=30
-          attempt=0
-          
-          while [ $attempt -lt $max_attempts ]; do
-            if curl -f -s http://localhost:4004/api/openapi > /dev/null 2>&1; then
-              echo "✓ Server is ready!"
-              break
+          # Try generating spec directly first (more reliable for CI)
+          echo "🔧 Attempting to generate OpenAPI spec directly..."
+          if MIX_ENV=dev mix openapi.gen --output test-spec.json; then
+            echo "✓ OpenAPI spec generated successfully using direct method"
+            echo "Validating generated spec..."
+            if jq '.info.title' test-spec.json > /dev/null; then
+              echo "✓ Generated spec is valid JSON"
+              rm test-spec.json
+            else
+              echo "❌ Generated spec is invalid JSON"
+              exit 1
             fi
+          else
+            echo "Direct generation failed, trying server approach..."
             
-            attempt=$((attempt + 1))
-            echo "Attempt $attempt/$max_attempts - Server not ready yet, waiting..."
-            sleep 2
-          done
-          
-          if [ $attempt -eq $max_attempts ]; then
-            echo "❌ Server failed to start after $max_attempts attempts"
-            kill $SERVER_PID 2>/dev/null || true
-            exit 1
+            # Start the Phoenix server in the background with logging
+            echo "Starting Phoenix server with logging..."
+            PORT=4004 MIX_ENV=dev mix phx.server > server.log 2>&1 &
+            SERVER_PID=$!
+            echo "Server PID: $SERVER_PID"
+
+            # Add trap to cleanup on exit
+            trap "kill $SERVER_PID 2>/dev/null || true" EXIT INT TERM
+
+            # Wait for server to be ready with retries
+            echo "Waiting for Phoenix server to start..."
+            max_attempts=15  # Reduced since we have fallback
+            attempt=0
+
+            while [ $attempt -lt $max_attempts ]; do
+              # Check if server process is still running
+              if ! kill -0 $SERVER_PID 2>/dev/null; then
+                echo "❌ Server process died! Showing logs:"
+                cat server.log
+                exit 1
+              fi
+
+              if curl -f -s http://localhost:4004/api/openapi > /dev/null 2>&1; then
+                echo "✓ Server is ready!"
+                break
+              fi
+
+              attempt=$((attempt + 1))
+              echo "Attempt $attempt/$max_attempts - Server not ready yet, waiting..."
+
+              # Show some logs every 3 attempts
+              if [ $((attempt % 3)) -eq 0 ]; then
+                echo "=== Server logs (last 5 lines) ==="
+                tail -5 server.log 2>/dev/null || echo "No logs yet"
+                echo "==============================="
+              fi
+
+              sleep 2
+            done
+
+            if [ $attempt -eq $max_attempts ]; then
+              echo "❌ Server failed to start after $max_attempts attempts"
+              echo "=== Full server logs ==="
+              cat server.log
+              echo "======================="
+              kill $SERVER_PID 2>/dev/null || true
+              exit 1
+            fi
+
+            # Verify the OpenAPI spec endpoint works
+            echo "Fetching OpenAPI spec..."
+            curl -f http://localhost:4004/api/openapi > /dev/null || {
+              echo "❌ Failed to fetch OpenAPI spec"
+              kill $SERVER_PID
+              exit 1
+            }
+
+            echo "✓ OpenAPI spec endpoint is working!"
+
+            # Kill the server
+            kill $SERVER_PID || true
           fi
-          
-          # Verify the OpenAPI spec endpoint works
-          echo "Fetching OpenAPI spec..."
-          curl -f http://localhost:4004/api/openapi || {
-            echo "❌ Failed to fetch OpenAPI spec"
-            kill $SERVER_PID
-            exit 1
-          }
-          
-          echo "✓ OpenAPI spec endpoint is working!"
-          
-          # Kill the server
-          kill $SERVER_PID

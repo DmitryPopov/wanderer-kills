@@ -4,7 +4,7 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
 
   @moduletag :external
 
-  alias WandererKills.Ingest.Http.Client.Mock, as: HttpClientMock
+  alias WandererKills.Http.ClientMock, as: HttpClientMock
   alias WandererKills.Ingest.Killmails.ZkbClient, as: ZKB
 
   # Get base URL from config
@@ -12,7 +12,7 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
 
   setup do
     # Configure the HTTP client to use the mock
-    Application.put_env(:wanderer_kills, :http, client: HttpClientMock)
+    Application.put_env(:wanderer_kills, :http, client: WandererKills.Http.ClientMock)
 
     on_exit(fn ->
       # Reset to default
@@ -28,9 +28,9 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       killmail = TestHelpers.generate_test_data(:killmail, killmail_id)
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/killID/123456/", _opts ->
-          {:ok, %{status: 200, body: Jason.encode!([killmail])}}
+      |> expect(:get_zkb, fn
+        "#{@base_url}/killID/123456/", _headers, _opts ->
+          {:ok, %{status: 200, body: [killmail]}}
       end)
 
       assert {:ok, ^killmail} = ZKB.fetch_killmail(killmail_id)
@@ -40,9 +40,9 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       killmail_id = 999_999
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/killID/999999/", _opts ->
-          {:ok, %{status: 200, body: "[]"}}
+      |> expect(:get_zkb, fn
+        "#{@base_url}/killID/999999/", _headers, _opts ->
+          {:ok, %{status: 200, body: []}}
       end)
 
       assert {:error, error} = ZKB.fetch_killmail(killmail_id)
@@ -55,8 +55,8 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       killmail_id = 123_456
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/killID/123456/", _opts ->
+      |> expect(:get_zkb, fn
+        "#{@base_url}/killID/123456/", _headers, _opts ->
           {:error, :rate_limited}
       end)
 
@@ -83,9 +83,9 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       killmails = [killmail1, killmail2]
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/systemID/30000142/", _opts ->
-          {:ok, %{status: 200, body: Jason.encode!(killmails)}}
+      |> expect(:get_zkb, fn
+        "#{@base_url}/systemID/30000142/", _headers, _opts ->
+          {:ok, %{status: 200, body: killmails}}
       end)
 
       # Using new API with options
@@ -100,9 +100,9 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       killmails = [killmail1, killmail2]
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/systemID/30000142/", _opts ->
-          {:ok, %{status: 200, body: Jason.encode!(killmails)}}
+      |> expect(:get_zkb, fn
+        "#{@base_url}/systemID/30000142/", _headers, _opts ->
+          {:ok, %{status: 200, body: killmails}}
       end)
 
       # Using new API without options
@@ -113,9 +113,9 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       system_id = 30_000_142
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/systemID/30000142/", _opts ->
-          {:ok, %{status: 200, body: "[]"}}
+      |> expect(:get_zkb, fn
+        "#{@base_url}/systemID/30000142/", _headers, _opts ->
+          {:ok, %{status: 200, body: []}}
       end)
 
       assert {:ok, []} = ZKB.fetch_system_killmails(system_id, [])
@@ -125,8 +125,8 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       system_id = 30_000_142
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/systemID/30000142/", _opts ->
+      |> expect(:get_zkb, fn
+        "#{@base_url}/systemID/30000142/", _headers, _opts ->
           {:error, :timeout}
       end)
 
@@ -154,9 +154,9 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       kill_list = Enum.map(1..expected_count, fn id -> %{"killmail_id" => id} end)
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/systemID/30000142/", _opts ->
-          {:ok, %{status: 200, body: Jason.encode!(kill_list)}}
+      |> expect(:get_zkb, fn
+        "#{@base_url}/systemID/30000142/", _headers, _opts ->
+          {:ok, %{status: 200, body: kill_list}}
       end)
 
       assert {:ok, ^expected_count} = ZKB.get_system_killmail_count(system_id)
@@ -166,8 +166,8 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       system_id = 30_000_142
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/systemID/30000142/", _opts ->
+      |> expect(:get_zkb, fn
+        "#{@base_url}/systemID/30000142/", _headers, _opts ->
           {:error, :not_found}
       end)
 
@@ -197,8 +197,8 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       }
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/history/20240101.json", _opts ->
+      |> expect(:get_zkb, fn
+        "#{@base_url}/history/20240101.json", _headers, _opts ->
           {:ok, %{status: 200, body: historical_data}}
       end)
 
@@ -210,8 +210,8 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       empty_data = %{}
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/history/20240101.json", _opts ->
+      |> expect(:get_zkb, fn
+        "#{@base_url}/history/20240101.json", _headers, _opts ->
           {:ok, %{status: 200, body: empty_data}}
       end)
 
@@ -222,21 +222,20 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       date = "20240101"
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/history/20240101.json", _opts ->
+      |> expect(:get_zkb, fn
+        "#{@base_url}/history/20240101.json", _headers, _opts ->
           {:error, :timeout}
       end)
 
-      assert {:error, error} = ZKB.fetch_history(date)
-      assert error.message =~ "timeout"
+      assert {:error, :timeout} = ZKB.fetch_history(date)
     end
 
     test "handles invalid response format" do
       date = "20240101"
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/history/20240101.json", _opts ->
+      |> expect(:get_zkb, fn
+        "#{@base_url}/history/20240101.json", _headers, _opts ->
           {:ok, %{status: 200, body: "invalid_string_response"}}
       end)
 
@@ -266,8 +265,8 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientTest do
       }
 
       HttpClientMock
-      |> expect(:get_with_rate_limit, fn
-        "#{@base_url}/history/20240101.json", _opts ->
+      |> expect(:get_zkb, fn
+        "#{@base_url}/history/20240101.json", _headers, _opts ->
           {:error, rate_limit_error}
       end)
 

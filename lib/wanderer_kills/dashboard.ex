@@ -9,13 +9,10 @@ defmodule WandererKills.Dashboard do
 
   require Logger
 
+  alias WandererKills.Core.Cache
   alias WandererKills.Core.EtsOwner
-
-  alias WandererKills.Core.Observability.{
-    HealthChecks,
-    UnifiedStatus
-  }
-
+  alias WandererKills.Core.Observability.Monitoring
+  alias WandererKills.Ingest.Historical.HistoricalStreamer
   alias WandererKills.Utils
 
   @ets_tables Application.compile_env(:wanderer_kills, [:dashboard, :ets_tables], [
@@ -51,175 +48,120 @@ defmodule WandererKills.Dashboard do
   """
   @spec get_dashboard_data() :: {:ok, map()} | {:error, String.t()}
   def get_dashboard_data do
-    try do
-      # Gather all status information
-      status = UnifiedStatus.get_status()
+    # Gather all status information
+    status = Monitoring.get_unified_status()
 
-      # Get health information - check both application and cache
-      full_health = HealthChecks.check_health(components: [:application, :cache])
-      Logger.debug("Full health check result: #{inspect(full_health)}")
+    # Application metrics from unified status
+    memory_bytes = get_in(status, [:system, :memory, :total]) || 0
+    memory_mb = if memory_bytes > 0, do: Float.round(memory_bytes / 1024 / 1024, 2), else: 0.0
+    process_count = get_in(status, [:system, :processes, :count]) || 0
 
-      # Extract health data safely
-      app_health = extract_health_data(full_health, :application)
-      cache_health = extract_health_data(full_health, :cache)
-
-      health = %{
-        application: app_health,
-        cache: cache_health
+    app_health = %{
+      status: "healthy",
+      metrics: %{
+        memory_mb: memory_mb,
+        process_count: process_count,
+        scheduler_usage: calculate_scheduler_usage(),
+        uptime_seconds: get_in(status, [:system, :uptime_seconds]) || uptime_seconds()
       }
+    }
 
-      # Get websocket stats from unified status and transform to expected structure
-      raw_websocket_stats = Utils.safe_get(status, [:websocket], %{})
+    # Cache metrics from direct calls
+    cache_stats = Cache.stats()
+    cache_size = Cache.size()
 
-      # Transform flat structure to nested structure expected by HTML template
-      websocket_stats = %{
-        connections: %{
-          active: Utils.safe_get(raw_websocket_stats, [:connections_active], 0),
-          total: Utils.safe_get(raw_websocket_stats, [:connections_total], 0)
-        },
-        subscriptions: %{
-          active: Utils.safe_get(raw_websocket_stats, [:subscriptions_active], 0),
-          systems: Utils.safe_get(raw_websocket_stats, [:subscriptions_systems], 0),
-          characters: Utils.safe_get(raw_websocket_stats, [:subscriptions_characters], 0)
-        },
-        kills_sent: %{
-          total: Utils.safe_get(raw_websocket_stats, [:kills_sent_total], 0),
-          realtime: Utils.safe_get(raw_websocket_stats, [:kills_sent_realtime], 0),
-          preload: Utils.safe_get(raw_websocket_stats, [:kills_sent_preload], 0)
-        }
+    cache_health = %{
+      status: "healthy",
+      metrics: %{
+        hit_rate: calculate_hit_rate(cache_stats),
+        size: cache_size,
+        eviction_count: 0,
+        expiration_count: 0
       }
+    }
 
-      # Get uptime and version safely
-      uptime = format_uptime(Utils.safe_get(status, [:system, :uptime_seconds], 0))
+    health = %{
+      application: app_health,
+      cache: cache_health
+    }
 
-      version =
-        case Application.spec(:wanderer_kills, :vsn) do
-          nil -> "unknown"
-          vsn -> to_string(vsn)
-        end
+    IO.puts(
+      "[DASHBOARD FINAL] App memory: #{memory_mb} MB, processes: #{process_count}, cache size: #{cache_size}"
+    )
 
-      # Get ETS storage statistics
-      ets_stats = get_ets_stats()
+    # Get websocket stats from unified status
+    raw_websocket_stats = Utils.safe_get(status, [:websocket], %{})
 
-      # Get RedisQ processing statistics
-      redisq_stats = get_redisq_stats(status)
+    # The websocket stats already have the nested structure we need
+    # Just pass them through as-is
+    websocket_stats = raw_websocket_stats
 
-      # Get historical streaming statistics
-      historical_stats = get_historical_streaming_stats()
+    # Get uptime and version safely
+    uptime = format_uptime(Utils.safe_get(status, [:system, :uptime_seconds], 0))
 
-      data = %{
-        status: status,
-        health: health,
-        websocket_stats: websocket_stats,
-        uptime: uptime,
-        version: version,
-        ets_stats: ets_stats,
-        redisq_stats: redisq_stats,
-        historical_stats: historical_stats
-      }
+    version =
+      case Application.spec(:wanderer_kills, :vsn) do
+        nil -> "unknown"
+        vsn -> to_string(vsn)
+      end
 
-      {:ok, data}
-    rescue
-      e ->
-        Logger.error("Error gathering dashboard data: #{inspect(e)} - #{inspect(__STACKTRACE__)}")
-        {:error, "Failed to gather dashboard data"}
-    end
+    # Get ETS storage statistics
+    ets_stats = get_ets_stats()
+
+    # Get RedisQ processing statistics
+    redisq_stats = get_redisq_stats(status)
+
+    # Get historical streaming statistics
+    historical_stats = get_historical_streaming_stats()
+
+    data = %{
+      status: status,
+      health: health,
+      websocket_stats: websocket_stats,
+      uptime: uptime,
+      version: version,
+      ets_stats: ets_stats,
+      redisq_stats: redisq_stats,
+      historical_stats: historical_stats
+    }
+
+    {:ok, data}
+  rescue
+    e ->
+      Logger.error("Error gathering dashboard data: #{inspect(e)} - #{inspect(__STACKTRACE__)}")
+      {:error, "Failed to gather dashboard data"}
   end
 
   # Private helper functions
 
-  defp extract_health_data(full_health, key) do
-    case full_health do
-      %{details: %{components: components}} when is_map(components) ->
-        case Map.get(components, key) do
-          %{} = health_data ->
-            Logger.debug("#{key} health: #{inspect(health_data)}")
-            # Extract metrics from the component data
-            extract_component_metrics(health_data, key)
+  # OLD extract_health_data REMOVED - should not be called anymore
 
-          _ ->
-            Logger.debug("No #{key} health data found, using default")
-            default_health_status()
-        end
+  # OLD extract_component_metrics REMOVED - now using direct extraction in main function
 
-      _ ->
-        Logger.debug(
-          "Using default #{key} health due to unexpected format: #{inspect(full_health)}"
-        )
+  defp calculate_hit_rate(stats) when is_map(stats) do
+    # Handle different possible formats
+    hits = stats[:hits] || stats["hits"] || 0
+    misses = stats[:misses] || stats["misses"] || 0
 
-        default_health_status()
-    end
-  end
-
-  defp extract_component_metrics(health_data, :application) do
-    # For application health, get the actual metrics from the health check
-    case HealthChecks.get_application_metrics() do
-      {:ok, %{metrics: %{system: system_metrics}}} ->
-        memory_mb = calculate_memory_mb(system_metrics)
-
-        %{
-          status: Map.get(health_data, :status, "healthy"),
-          metrics: %{
-            memory_mb: memory_mb,
-            process_count: Map.get(system_metrics, :process_count, 0),
-            scheduler_usage: calculate_scheduler_usage(),
-            uptime_seconds: Map.get(system_metrics, :uptime_seconds, 0)
-          }
-        }
+    case {hits, misses} do
+      {h, m} when h + m > 0 ->
+        Float.round(h / (h + m) * 100, 2)
 
       _ ->
-        Logger.debug("Failed to get application metrics, using health data")
-        health_data
-    end
-  end
-
-  defp extract_component_metrics(health_data, :cache) do
-    # For cache health, get the actual metrics from the cache health check
-    case HealthChecks.get_cache_metrics() do
-      {:ok, %{metrics: %{aggregate: aggregate_metrics, caches: caches}}} ->
-        # Get the first cache's actual metrics since aggregate might be empty
-        cache_data = List.first(caches) || %{}
-
-        %{
-          status: Map.get(health_data, :status, "healthy"),
-          metrics: %{
-            hit_rate:
-              Map.get(cache_data, :hit_rate, Map.get(aggregate_metrics, :average_hit_rate, 0.0)),
-            size: Map.get(cache_data, :size, Map.get(aggregate_metrics, :total_size, 0)),
-            eviction_count: Map.get(aggregate_metrics, :total_evictions, 0),
-            expiration_count: Map.get(aggregate_metrics, :total_expirations, 0)
-          }
-        }
-
-      _ ->
-        Logger.debug("Failed to get cache metrics, using health data")
-        health_data
-    end
-  end
-
-  defp calculate_memory_mb(system_metrics) do
-    case Map.get(system_metrics, :memory_usage) do
-      memory_usage when is_list(memory_usage) ->
-        total_bytes = Keyword.get(memory_usage, :total, 0)
-        Float.round(total_bytes / (1024 * 1024), 2)
-
-      _ ->
-        0
+        0.0
     end
   end
 
   defp calculate_scheduler_usage do
-    try do
-      # Get scheduler utilization (this is an approximation)
-      run_queue = :erlang.statistics(:run_queue)
-      schedulers = :erlang.system_info(:schedulers)
+    # Get scheduler utilization (this is an approximation)
+    run_queue = :erlang.statistics(:run_queue)
+    schedulers = :erlang.system_info(:schedulers)
 
-      # Calculate as percentage of run queue vs available schedulers
-      usage = run_queue / schedulers * 100
-      Float.round(min(usage, 100.0), 1)
-    rescue
-      _ -> 0.0
-    end
+    # Calculate as percentage of run queue vs available schedulers
+    usage = run_queue / schedulers * 100
+    Float.round(min(usage, 100.0), 1)
+  rescue
+    _ -> 0.0
   end
 
   defp format_uptime(seconds) when is_number(seconds) do
@@ -236,18 +178,7 @@ defmodule WandererKills.Dashboard do
 
   defp format_uptime(_), do: "N/A"
 
-  defp default_health_status do
-    %{
-      status: "healthy",
-      metrics: %{
-        memory_mb: 0,
-        process_count: 0,
-        scheduler_usage: 0,
-        hit_rate: 0,
-        size: 0
-      }
-    }
-  end
+  # default_health_status REMOVED - no longer needed with direct extraction
 
   defp get_ets_stats do
     Enum.map(@ets_tables, fn {table, icon, name} ->
@@ -382,7 +313,7 @@ defmodule WandererKills.Dashboard do
   end
 
   # Gets historical streaming statistics from the HistoricalStreamer process.
-  # 
+  #
   # Returns statistics about the current historical streaming progress including:
   # - Current date being processed
   # - Total processed count
@@ -416,7 +347,7 @@ defmodule WandererKills.Dashboard do
   end
 
   defp safely_get_streaming_status do
-    streamer_module = WandererKills.Ingest.Historical.HistoricalStreamer
+    streamer_module = HistoricalStreamer
 
     case GenServer.whereis(streamer_module) do
       nil ->

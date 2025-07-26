@@ -1,11 +1,8 @@
 defmodule WandererKills.Ingest.Killmails.StoreEventStreamingTest do
   use WandererKills.TestCase
-  use WandererKills.Test.SharedContexts
-  use WandererKills.Test.Tags
 
   alias WandererKills.Core.Storage.KillmailStore
 
-  unit_test_tags()
   @moduletag area: :killmail_storage
   @moduletag area: :event_streaming
 
@@ -37,7 +34,9 @@ defmodule WandererKills.Ingest.Killmails.StoreEventStreamingTest do
     "zkb" => %{"totalValue" => 3000}
   }
 
-  setup [:with_clean_environment, :ensure_event_streaming_tables, :with_kill_store]
+  # Test setup is handled by UnifiedTestCase
+
+  setup :ensure_event_streaming_tables
 
   defp ensure_event_streaming_tables(_context) do
     # Ensure event streaming is enabled before table initialization

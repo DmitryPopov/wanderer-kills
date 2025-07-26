@@ -3,8 +3,8 @@ defmodule WandererKills.Debug.ConnectionCleanup do
   Tools to clean up leaked WebSocket connections and orphaned processes
   """
 
-  alias WandererKills.Core.Observability.WebSocketStats
-  alias WandererKills.Subs.SubscriptionManager
+  alias WandererKills.Core.Observability.Metrics
+  alias WandererKills.Subs.SimpleSubscriptionManager, as: SubscriptionManager
   require Logger
 
   @doc """
@@ -59,7 +59,7 @@ defmodule WandererKills.Debug.ConnectionCleanup do
     alive_count = length(get_alive_websocket_pids())
 
     # Get current stats
-    {:ok, current_stats} = WebSocketStats.get_stats()
+    {:ok, current_stats} = Metrics.get_websocket_stats()
 
     # Calculate the correction needed
     correction = current_stats.connections.active - alive_count
@@ -69,7 +69,7 @@ defmodule WandererKills.Debug.ConnectionCleanup do
 
       # Send disconnection events to correct the count
       Enum.each(1..correction, fn _ ->
-        WebSocketStats.track_connection(:disconnected, %{reason: :cleanup})
+        Metrics.track_websocket_connection(:disconnected, %{reason: :cleanup})
       end)
     end
 
@@ -97,14 +97,14 @@ defmodule WandererKills.Debug.ConnectionCleanup do
     # Kill channels not in alive_sockets
     killed_count =
       Enum.reduce(channel_processes, 0, fn pid, acc ->
-        if MapSet.member?(alive_sockets, pid) do
-          acc
-        else
-          Logger.info(
-            "[ConnectionCleanup] Shutting down orphaned channel process: #{inspect(pid)}"
-          )
+        try do
+          if MapSet.member?(alive_sockets, pid) do
+            acc
+          else
+            Logger.info(
+              "[ConnectionCleanup] Shutting down orphaned channel process: #{inspect(pid)}"
+            )
 
-          try do
             # First try graceful shutdown
             Process.exit(pid, :shutdown)
             Process.sleep(50)
@@ -119,14 +119,14 @@ defmodule WandererKills.Debug.ConnectionCleanup do
             end
 
             acc + 1
-          rescue
-            e ->
-              Logger.error("[ConnectionCleanup] Failed to shutdown process: #{inspect(pid)}",
-                error: inspect(e)
-              )
-
-              acc
           end
+        rescue
+          e ->
+            Logger.error("[ConnectionCleanup] Failed to shutdown process: #{inspect(pid)}",
+              error: inspect(e)
+            )
+
+            acc
         end
       end)
 
@@ -166,7 +166,7 @@ defmodule WandererKills.Debug.ConnectionCleanup do
   defp monitor_loop(interval_ms) do
     Process.sleep(interval_ms)
 
-    {:ok, stats} = WebSocketStats.get_stats()
+    {:ok, stats} = Metrics.get_websocket_stats()
     leak_count = stats.connections.total_connected - stats.connections.total_disconnected
 
     if leak_count > 10 do
@@ -198,19 +198,17 @@ defmodule WandererKills.Debug.ConnectionCleanup do
   end
 
   defp get_alive_websocket_pids do
-    try do
-      SubscriptionManager.list_subscriptions()
-      |> Enum.filter(&(&1["socket_pid"] != nil))
-      |> Enum.map(& &1["socket_pid"])
-      |> Enum.filter(fn pid ->
-        try do
-          Process.alive?(pid)
-        rescue
-          _ -> false
-        end
-      end)
-    rescue
-      _ -> []
-    end
+    SubscriptionManager.list_subscriptions()
+    |> Enum.filter(&(&1["socket_pid"] != nil))
+    |> Enum.map(& &1["socket_pid"])
+    |> Enum.filter(&safe_process_alive?/1)
+  rescue
+    _ -> []
+  end
+
+  defp safe_process_alive?(pid) do
+    Process.alive?(pid)
+  rescue
+    _ -> false
   end
 end

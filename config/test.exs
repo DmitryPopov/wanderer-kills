@@ -25,7 +25,7 @@ config :wanderer_kills,
 
   # HTTP retry configuration
   http: [
-    client: WandererKills.Ingest.Http.Client.Mock,
+    client: WandererKills.Http.ClientMock,
     request_timeout_ms: 1_000,
     default_timeout_ms: 1_000,
     retry: [
@@ -81,14 +81,10 @@ config :wanderer_kills,
     max_events_per_system: 100
   ],
 
-  # Monitoring configuration
-  monitoring: [
+  # Unified observability configuration (monitoring and telemetry) - disabled for tests
+  observability: [
     status_interval_ms: 60_000,
-    health_check_interval_ms: 30_000
-  ],
-
-  # Telemetry configuration - disabled for tests
-  telemetry: [
+    health_check_interval_ms: 30_000,
     enabled_metrics: [],
     sampling_rate: 0.0,
     retention_period: 60
@@ -116,3 +112,9 @@ config :cachex, :default_ttl, :timer.minutes(1)
 # Logger configuration for tests - set to debug to allow testing of log output
 # Note: runtime.exs may override this, so we'll handle it differently
 config :logger, :default_handler, level: :debug
+
+# Configure endpoint for testing
+config :wanderer_kills, WandererKillsWeb.Endpoint,
+  http: [port: 4002],
+  server: false,
+  pubsub_server: WandererKills.PubSub

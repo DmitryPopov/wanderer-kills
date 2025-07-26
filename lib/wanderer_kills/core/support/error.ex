@@ -208,6 +208,101 @@ defmodule WandererKills.Core.Support.Error do
   end
 
   # ============================================================================
+  # Error Standardization Functions
+  # ============================================================================
+
+  @doc """
+  Converts common atom errors to standardized Error structs.
+
+  This function helps migrate legacy error returns to the new standard.
+  """
+  @spec standardize_error(atom() | {atom(), term()} | term()) :: t()
+  def standardize_error(:not_found), do: not_found_error()
+  def standardize_error(:timeout), do: timeout_error()
+  def standardize_error(:invalid_format), do: invalid_format_error()
+  def standardize_error(:rate_limited), do: rate_limit_error()
+  def standardize_error(:connection_failed), do: connection_error()
+
+  def standardize_error({:not_found, details}) when is_binary(details) do
+    not_found_error(details)
+  end
+
+  def standardize_error({:timeout, details}) when is_binary(details) do
+    timeout_error(details)
+  end
+
+  def standardize_error({:invalid_format, details}) when is_binary(details) do
+    invalid_format_error(details)
+  end
+
+  def standardize_error(other) do
+    system_error(:unknown_error, "Unknown error: #{inspect(other)}")
+  end
+
+  @doc """
+  Wraps a function result to ensure it returns standardized errors.
+
+  ## Examples
+
+  ```elixir
+  # Wrap a function that might return nil
+  with_standard_error(fn -> some_function() end, :cache, :miss, "Cache miss")
+
+  # Wrap a function that returns {:error, atom}
+  with_standard_error(fn -> legacy_function() end, :http, :request_failed)
+  ```
+  """
+  @spec with_standard_error(
+          (-> {:ok, term()} | {:error, term()} | term()),
+          domain(),
+          error_type(),
+          String.t() | nil
+        ) :: {:ok, term()} | {:error, t()}
+  def with_standard_error(fun, domain, type, message \\ nil) do
+    case fun.() do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, %__MODULE__{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        msg = message || "Operation failed: #{inspect(reason)}"
+        {:error, new(domain, type, msg)}
+
+      nil ->
+        msg = message || "Operation returned nil"
+        {:error, new(domain, type, msg)}
+
+      result ->
+        # Assume non-tuple results are successful
+        {:ok, result}
+    end
+  end
+
+  @doc """
+  Ensures a function returns {:ok, result} or {:error, %Error{}}.
+
+  Useful for wrapping functions that return bare values or nil.
+  """
+  @spec ensure_error_tuple(term(), domain(), error_type()) ::
+          {:ok, term()} | {:error, t()}
+  def ensure_error_tuple(nil, domain, type) do
+    {:error, new(domain, type, "Operation returned nil")}
+  end
+
+  def ensure_error_tuple({:ok, _} = result, _domain, _type), do: result
+  def ensure_error_tuple({:error, %__MODULE__{}} = result, _domain, _type), do: result
+
+  def ensure_error_tuple({:error, reason}, domain, type) do
+    {:error, new(domain, type, "Operation failed: #{inspect(reason)}")}
+  end
+
+  def ensure_error_tuple(result, _domain, _type) do
+    {:ok, result}
+  end
+
+  # ============================================================================
   # Common Error Patterns
   # ============================================================================
 

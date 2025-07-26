@@ -44,16 +44,69 @@ jobs:
       
       - name: Generate current OpenAPI spec
         run: |
-          # Start server in background to fetch spec from API endpoint
-          MIX_ENV=test mix phx.server &
-          SERVER_PID=$!
-          sleep 15  # Wait for server to start
-          
-          # Fetch the OpenAPI spec from the API endpoint
-          curl -f http://localhost:4004/api/openapi > current-spec.json || (kill $SERVER_PID && exit 1)
-          
-          # Kill the server
-          kill $SERVER_PID || true
+          # Try generating spec directly first (more reliable for CI)
+          echo "🔧 Attempting to generate OpenAPI spec directly..."
+          if MIX_ENV=dev mix openapi.gen --output current-spec.json; then
+            echo "✓ OpenAPI spec generated successfully using direct method"
+          else
+            echo "Direct generation failed, trying server approach..."
+            
+            # Start server in background to fetch spec from API endpoint and capture logs
+            echo "Starting Phoenix server with logging..."
+            PORT=4004 MIX_ENV=dev mix phx.server > server.log 2>&1 &
+            SERVER_PID=$!
+            echo "Server PID: $SERVER_PID"
+
+            # Add trap to cleanup on exit
+            trap "kill $SERVER_PID 2>/dev/null || true" EXIT INT TERM
+
+            # Wait for server to be ready with retries
+            echo "Waiting for Phoenix server to start..."
+            max_attempts=15  # Reduced attempts since we have fallback
+            attempt=0
+
+            while [ $attempt -lt $max_attempts ]; do
+              # Check if server process is still running
+              if ! kill -0 $SERVER_PID 2>/dev/null; then
+                echo "❌ Server process died! Showing logs:"
+                cat server.log
+                kill $SERVER_PID 2>/dev/null || true
+                exit 1
+              fi
+
+              if curl -f -s http://localhost:4004/api/openapi > /dev/null 2>&1; then
+                echo "✓ Server is ready!"
+                break
+              fi
+
+              attempt=$((attempt + 1))
+              echo "Attempt $attempt/$max_attempts - Server not ready yet, waiting..."
+
+              # Show some logs every 3 attempts to debug
+              if [ $((attempt % 3)) -eq 0 ]; then
+                echo "=== Server logs (last 5 lines) ==="
+                tail -5 server.log 2>/dev/null || echo "No logs yet"
+                echo "==============================="
+              fi
+
+              sleep 2
+            done
+
+            if [ $attempt -eq $max_attempts ]; then
+              echo "❌ Server failed to start after $max_attempts attempts"
+              echo "=== Full server logs ==="
+              cat server.log
+              echo "======================="
+              kill $SERVER_PID 2>/dev/null || true
+              exit 1
+            fi
+
+            # Fetch the OpenAPI spec from the API endpoint
+            curl -f http://localhost:4004/api/openapi > current-spec.json || (kill $SERVER_PID && exit 1)
+
+            # Kill the server
+            kill $SERVER_PID || true
+          fi
       
       - name: Checkout main branch spec
         run: |

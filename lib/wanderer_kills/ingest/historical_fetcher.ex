@@ -13,8 +13,8 @@ defmodule WandererKills.Ingest.HistoricalFetcher do
   # Removed unused aliases
   alias WandererKills.Core.Support.{Error, SupervisedTask}
   alias WandererKills.Ingest.Killmails.{UnifiedProcessor, ZkbClient}
-  alias WandererKills.Ingest.RateLimiter
-  alias WandererKills.Subs.SubscriptionManager
+  alias WandererKills.Ingest.SmartRateLimiter
+  alias WandererKills.Subs.SimpleSubscriptionManager, as: SubscriptionManager
   # Conditional web dependency
 
   @type preload_request :: %{
@@ -481,7 +481,7 @@ defmodule WandererKills.Ingest.HistoricalFetcher do
 
   defp process_page_with_rate_limit(request, system_id, page_kills, buffer_pid) do
     # Check rate limit before each page
-    case RateLimiter.check_rate_limit(:zkillboard) do
+    case SmartRateLimiter.check_rate_limit(:zkillboard) do
       :ok ->
         handle_page_processing(request, page_kills, buffer_pid)
 

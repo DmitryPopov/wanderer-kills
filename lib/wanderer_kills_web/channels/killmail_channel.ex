@@ -86,14 +86,14 @@ defmodule WandererKillsWeb.KillmailChannel do
 
   require Logger
 
-  alias WandererKills.Core.Observability.WebSocketStats
+  alias WandererKills.Core.Observability.Metrics
   alias WandererKills.Core.Support.Error
-  alias WandererKills.Core.Support.PubSubTopics
   alias WandererKills.Core.Support.SupervisedTask
-  # alias WandererKills.Ingest.HistoricalFetcher - not needed for WebSocket subscriptions
+  alias WandererKills.Core.Support.Utils
+  alias WandererKills.Ingest.RequestCoalescer
+  alias WandererKills.Subs.Filter
   alias WandererKills.Subs.Preloader
-  alias WandererKills.Subs.SubscriptionManager
-  alias WandererKills.Subs.Subscriptions.Filter
+  alias WandererKills.Subs.SimpleSubscriptionManager
   alias WandererKillsWeb.Channels.HeartbeatMonitor
 
   @impl true
@@ -122,7 +122,11 @@ defmodule WandererKillsWeb.KillmailChannel do
       |> assign(:subscribed_characters, MapSet.new())
 
     # Track connection
-    WebSocketStats.track_connection(:connected, %{
+    Logger.info(
+      "[WebSocket] Tracking connection - calling Metrics.track_websocket_connection(:connected)"
+    )
+
+    Metrics.track_websocket_connection(:connected, %{
       user_id: socket.assigns.user_id,
       subscription_id: subscription_id,
       initial_systems_count: 0
@@ -173,7 +177,7 @@ defmodule WandererKillsWeb.KillmailChannel do
           maybe_unsubscribe_from_all_systems(socket, current_systems, new_systems)
 
           # Track the subscription update
-          WebSocketStats.track_subscription(:updated, MapSet.size(new_systems), %{
+          Metrics.track_websocket_subscription(:updated, MapSet.size(new_systems), %{
             user_id: socket.assigns.user_id,
             subscription_id: socket.assigns.subscription_id,
             operation: :add_systems,
@@ -224,7 +228,7 @@ defmodule WandererKillsWeb.KillmailChannel do
           socket = assign(socket, :subscribed_systems, remaining_systems)
 
           # Track the subscription update (negative count for removals)
-          WebSocketStats.track_subscription(:updated, -MapSet.size(systems_to_remove), %{
+          Metrics.track_websocket_subscription(:updated, -MapSet.size(systems_to_remove), %{
             user_id: socket.assigns.user_id,
             subscription_id: socket.assigns.subscription_id,
             operation: :remove_systems,
@@ -299,16 +303,8 @@ defmodule WandererKillsWeb.KillmailChannel do
       systems_count: length(systems)
     )
 
-    # Extended preload is only supported for webhook subscriptions, not WebSocket
     # For WebSocket connections, always use standard preload
-    if false do
-      # Disabled for WebSocket subscriptions - HistoricalFetcher only works with webhook subscriptions
-      # This code path would always fail because WebSocket subscriptions aren't in SubscriptionManager
-      nil
-    else
-      # Standard preload behavior
-      preload_kills_for_systems(socket, systems, "initial join")
-    end
+    preload_kills_for_systems(socket, systems, "initial join")
 
     {:noreply, socket}
   end
@@ -372,7 +368,7 @@ defmodule WandererKillsWeb.KillmailChannel do
       })
 
       # Track kills sent to websocket
-      WebSocketStats.increment_kills_sent(:realtime, length(filtered_killmails))
+      Metrics.increment_kills_sent(:realtime, length(filtered_killmails))
     end
 
     {:noreply, socket}
@@ -435,7 +431,7 @@ defmodule WandererKillsWeb.KillmailChannel do
 
       # Track kills sent
       if payload[:kills] do
-        WebSocketStats.increment_kills_sent(:preload, length(payload[:kills]))
+        Metrics.increment_kills_sent(:preload, length(payload[:kills]))
       end
     end
 
@@ -463,6 +459,12 @@ defmodule WandererKillsWeb.KillmailChannel do
     {:noreply, socket}
   end
 
+  # Handle simple new_kill messages from PubSub
+  def handle_info({:new_kill, killmail}, socket) do
+    push(socket, "new_kill", killmail)
+    {:noreply, socket}
+  end
+
   # Handle any unmatched PubSub messages
   def handle_info(message, socket) do
     Logger.debug("[DEBUG] Unhandled PubSub message",
@@ -481,7 +483,7 @@ defmodule WandererKillsWeb.KillmailChannel do
 
     if subscription_id = socket.assigns[:subscription_id] do
       # Track disconnection
-      WebSocketStats.track_connection(:disconnected, %{
+      Metrics.track_websocket_connection(:disconnected, %{
         user_id: socket.assigns.user_id,
         subscription_id: subscription_id,
         reason: reason
@@ -493,7 +495,7 @@ defmodule WandererKillsWeb.KillmailChannel do
       subscribed_characters_count =
         MapSet.size(socket.assigns[:subscribed_characters] || MapSet.new())
 
-      WebSocketStats.track_subscription(:removed, subscribed_systems_count, %{
+      Metrics.track_websocket_subscription(:removed, subscribed_systems_count, %{
         user_id: socket.assigns.user_id,
         subscription_id: subscription_id,
         character_count: subscribed_characters_count
@@ -541,14 +543,18 @@ defmodule WandererKillsWeb.KillmailChannel do
         create_subscription(socket, valid_systems, valid_characters, preload_config)
 
       # Track subscription creation
-      WebSocketStats.track_subscription(:added, length(valid_systems), %{
+      Metrics.track_websocket_subscription(:added, length(valid_systems), %{
         user_id: socket.assigns.user_id,
         subscription_id: subscription_id,
         character_count: length(valid_characters)
       })
 
       # Track connection with initial systems
-      WebSocketStats.track_connection(:connected, %{
+      Logger.info(
+        "[WebSocket] Tracking connection with systems - calling Metrics.track_websocket_connection(:connected)"
+      )
+
+      Metrics.track_websocket_connection(:connected, %{
         user_id: socket.assigns.user_id,
         subscription_id: subscription_id,
         initial_systems_count: length(valid_systems),
@@ -591,7 +597,7 @@ defmodule WandererKillsWeb.KillmailChannel do
         if length(valid_characters) > 0 do
           Phoenix.PubSub.subscribe(
             WandererKills.PubSub,
-            PubSubTopics.all_systems_topic()
+            Utils.all_systems_topic()
           )
         end
       end
@@ -716,8 +722,8 @@ defmodule WandererKillsWeb.KillmailChannel do
   defp create_subscription(socket, systems, characters, preload_config) do
     subscription_id = generate_random_id()
 
-    # Register with SubscriptionManager with character support
-    SubscriptionManager.add_websocket_subscription(%{
+    # Register with SimpleSubscriptionManager with character support
+    SimpleSubscriptionManager.add_websocket_subscription(%{
       "id" => subscription_id,
       # Required field
       "subscriber_id" => socket.assigns.user_id,
@@ -743,23 +749,23 @@ defmodule WandererKillsWeb.KillmailChannel do
       end)
       |> Enum.into(%{})
 
-    SubscriptionManager.update_websocket_subscription(subscription_id, string_updates)
+    SimpleSubscriptionManager.update_websocket_subscription(subscription_id, string_updates)
   end
 
   defp remove_subscription(subscription_id) do
-    SubscriptionManager.remove_websocket_subscription(subscription_id)
+    SimpleSubscriptionManager.remove_websocket_subscription(subscription_id)
   end
 
   defp subscribe_to_systems(systems) do
     Enum.each(systems, fn system_id ->
       Phoenix.PubSub.subscribe(
         WandererKills.PubSub,
-        PubSubTopics.system_topic(system_id)
+        Utils.system_topic(system_id)
       )
 
       Phoenix.PubSub.subscribe(
         WandererKills.PubSub,
-        PubSubTopics.system_detailed_topic(system_id)
+        Utils.system_detailed_topic(system_id)
       )
     end)
   end
@@ -768,12 +774,12 @@ defmodule WandererKillsWeb.KillmailChannel do
     Enum.each(systems, fn system_id ->
       Phoenix.PubSub.unsubscribe(
         WandererKills.PubSub,
-        PubSubTopics.system_topic(system_id)
+        Utils.system_topic(system_id)
       )
 
       Phoenix.PubSub.unsubscribe(
         WandererKills.PubSub,
-        PubSubTopics.system_detailed_topic(system_id)
+        Utils.system_detailed_topic(system_id)
       )
     end)
   end
@@ -883,7 +889,7 @@ defmodule WandererKillsWeb.KillmailChannel do
   defp coalesce_system_kills_request(system_id, limit) do
     request_key = {:websocket_preload, system_id, limit, 24}
 
-    case WandererKills.Ingest.RequestCoalescer.request(request_key, fn ->
+    case RequestCoalescer.request(request_key, fn ->
            Preloader.preload_kills_for_system(system_id, limit, 24)
          end) do
       {:ok, kills} ->
@@ -918,7 +924,7 @@ defmodule WandererKillsWeb.KillmailChannel do
       })
 
       # Track kills sent to websocket
-      WebSocketStats.increment_kills_sent(:preload, length(kills))
+      Metrics.increment_kills_sent(:preload, length(kills))
 
       length(kills)
     else
@@ -933,7 +939,7 @@ defmodule WandererKillsWeb.KillmailChannel do
   """
   @spec get_stats() :: {:ok, map()} | {:error, term()}
   def get_stats do
-    WebSocketStats.get_stats()
+    Metrics.get_websocket_stats()
   end
 
   @doc """
@@ -941,7 +947,7 @@ defmodule WandererKillsWeb.KillmailChannel do
   """
   @spec reset_stats() :: :ok
   def reset_stats do
-    WebSocketStats.reset_stats()
+    Metrics.reset_websocket_stats()
   end
 
   # Generate a unique random ID for subscriptions
@@ -997,7 +1003,7 @@ defmodule WandererKillsWeb.KillmailChannel do
           MapSet.size(current_characters) > 0 ->
         Phoenix.PubSub.unsubscribe(
           WandererKills.PubSub,
-          PubSubTopics.all_systems_topic()
+          Utils.all_systems_topic()
         )
 
         Logger.debug(
@@ -1010,7 +1016,7 @@ defmodule WandererKillsWeb.KillmailChannel do
       MapSet.size(new_systems) == 0 and MapSet.size(current_characters) == 0 ->
         Phoenix.PubSub.unsubscribe(
           WandererKills.PubSub,
-          PubSubTopics.all_systems_topic()
+          Utils.all_systems_topic()
         )
 
         Logger.debug(
@@ -1029,7 +1035,7 @@ defmodule WandererKillsWeb.KillmailChannel do
          MapSet.size(all_characters) > 0 do
       Phoenix.PubSub.subscribe(
         WandererKills.PubSub,
-        PubSubTopics.all_systems_topic()
+        Utils.all_systems_topic()
       )
     end
   end

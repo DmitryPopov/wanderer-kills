@@ -5,6 +5,12 @@ defmodule WandererKills.Integration.CacheMigrationTest do
   alias WandererKills.Core.Cache
   alias WandererKills.Ingest.ESI.Client
 
+  setup do
+    # Setup HTTP mocks for ESI client tests
+    WandererKills.TestHelpers.setup_mocks()
+    :ok
+  end
+
   describe "Cachex migration integration tests" do
     test "ESI cache preserves character data with proper TTL" do
       character_id = 123_456
@@ -16,14 +22,14 @@ defmodule WandererKills.Integration.CacheMigrationTest do
       }
 
       # Test cache miss then hit
-      assert {:error, _} = Cache.get(:characters, character_id)
+      assert {:error, _} = Cache.get_character(character_id)
 
       # Put data and verify it can be retrieved
-      assert {:ok, true} = Cache.put(:characters, character_id, character_data)
-      assert {:ok, ^character_data} = Cache.get(:characters, character_id)
+      assert {:ok, _} = Cache.put_character(character_id, character_data)
+      assert {:ok, ^character_data} = Cache.get_character(character_id)
 
-      # Verify cache namespace
-      assert Cache.exists?(:characters, character_id)
+      # Verify cache exists
+      assert Cache.exists?(:esi_data, "character:#{character_id}")
     end
 
     test "ESI cache handles corporation data correctly" do
@@ -97,9 +103,8 @@ defmodule WandererKills.Integration.CacheMigrationTest do
       system_id = 30_000_142
       killmail_ids = [12_345, 67_890, 54_321]
 
-      # Test empty system initially - should return not found error
-      assert {:error, %WandererKills.Core.Support.Error{type: :not_found}} =
-               Cache.list_system_killmails(system_id)
+      # Test empty system initially - should return empty list
+      assert {:ok, []} = Cache.list_system_killmails(system_id)
 
       # Add killmails to system
       Enum.each(killmail_ids, fn killmail_id ->
@@ -132,16 +137,16 @@ defmodule WandererKills.Integration.CacheMigrationTest do
 
     test "systems cache handles fetch timestamps correctly" do
       system_id = 30_000_144
-      timestamp = DateTime.utc_now()
 
       # Should not have timestamp initially
-      assert {:error, _} = Cache.get(:systems, "last_fetch:#{system_id}")
+      assert {:error, _} = Cache.get(:systems, "fetched:#{system_id}")
 
-      # Set timestamp
+      # Set timestamp - use millisecond timestamp
+      timestamp = :os.system_time(:millisecond)
       assert {:ok, _} = Cache.mark_system_fetched(system_id, timestamp)
 
       # Verify timestamp is retrieved correctly
-      assert {:ok, retrieved_timestamp} = Cache.get(:systems, "last_fetch:#{system_id}")
+      assert {:ok, retrieved_timestamp} = Cache.get(:systems, "fetched:#{system_id}")
 
       # Check if timestamp is the same (accounting for DateTime comparison)
       assert retrieved_timestamp == timestamp
@@ -185,11 +190,11 @@ defmodule WandererKills.Integration.CacheMigrationTest do
       character_id = 98_765_432
       character_data = %{"character_id" => character_id, "name" => "Client Test"}
 
-      # Mock ESI response
-      {:ok, true} = Cache.put(:characters, character_id, character_data)
+      # Put character data in cache first
+      Cache.put_character(character_id, character_data)
 
-      # Test Client behavior implementation
-      assert {:ok, ^character_data} = Client.fetch({:character, character_id})
+      # Test Client behavior implementation - should get from cache
+      assert {:ok, ^character_data} = Client.get_character(character_id)
       assert Client.supports?({:character, character_id})
       refute Client.supports?({:unsupported, character_id})
     end
@@ -206,11 +211,11 @@ defmodule WandererKills.Integration.CacheMigrationTest do
         assert {:ok, true} = Cache.put(namespace, test_key, test_value)
         assert {:ok, fetched_value} = Cache.get(namespace, test_key)
         assert fetched_value == test_value
-        assert true = Cache.exists?(namespace, test_key)
+        assert {:ok, true} = Cache.exists?(namespace, test_key)
 
         # Delete should work
         assert {:ok, _} = Cache.delete(namespace, test_key)
-        refute Cache.exists?(namespace, test_key)
+        assert {:ok, false} = Cache.exists?(namespace, test_key)
       end)
     end
 
@@ -287,8 +292,8 @@ defmodule WandererKills.Integration.CacheMigrationTest do
       assert {:error, _} = Cache.get(:characters, 999_999_999)
       assert {:error, _} = Cache.get(:ship_types, 999_999_999)
 
-      assert {:error, %WandererKills.Core.Support.Error{type: :not_found}} =
-               Cache.list_system_killmails(999_999_999)
+      # Non-existent system returns empty list
+      assert {:ok, []} = Cache.list_system_killmails(999_999_999)
     end
   end
 end

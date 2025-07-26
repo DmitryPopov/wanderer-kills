@@ -21,9 +21,8 @@ defmodule WandererKills.CacheKeyTest do
       assert {:ok, _} = Cache.add_active_system(456)
       # Note: get_active_systems() has streaming issues in test environment
 
-      # No killmails initially - returns error when not found
-      assert {:error, %WandererKills.Core.Support.Error{type: :not_found}} =
-               Cache.list_system_killmails(456)
+      # No killmails initially - returns empty list when not found
+      assert {:ok, []} = Cache.list_system_killmails(456)
 
       assert {:ok, true} = Cache.add_system_killmail(456, 123)
       assert {:ok, [123]} = Cache.list_system_killmails(456)
@@ -76,14 +75,14 @@ defmodule WandererKills.CacheKeyTest do
     test "system fetch timestamp operations work" do
       # Use a unique system ID to avoid conflicts with other tests
       system_id = 99_789_123
-      timestamp = DateTime.utc_now()
+      timestamp = :os.system_time(:millisecond)
 
       # Ensure cache is completely clear for this specific system
       TestHelpers.clear_all_caches()
 
       refute Cache.system_fetched_recently?(system_id)
       assert {:ok, true} = Cache.mark_system_fetched(system_id, timestamp)
-      assert true = Cache.system_fetched_recently?(system_id)
+      assert Cache.system_fetched_recently?(system_id)
     end
   end
 end

@@ -25,7 +25,7 @@ config :wanderer_kills,
 
   # HTTP client configuration
   http: [
-    client: WandererKills.Ingest.Http.Client,
+    client: WandererKills.Http.Client,
     request_timeout_ms: 10_000,
     default_timeout_ms: 10_000,
     retry: [
@@ -42,14 +42,25 @@ config :wanderer_kills,
     batch_concurrency: 5
   ],
 
-  # Rate limiter configuration
-  rate_limiter: [
-    # Increased from 30 to 100
+  # Unified smart rate limiter configuration
+  smart_rate_limiter: [
+    # Mode: :simple (backward compatible) or :advanced (with queuing & circuit breaker)
+    mode: :simple,
+
+    # Simple mode configuration (backward compatible with old RateLimiter)
     zkb_capacity: 100,
-    # Increased from 30 to 50
     zkb_refill_rate: 50,
     esi_capacity: 100,
-    esi_refill_rate: 100
+    esi_refill_rate: 100,
+
+    # Advanced mode configuration (only used when mode: :advanced)
+    max_tokens: 150,
+    refill_rate: 75,
+    refill_interval_ms: 1000,
+    circuit_failure_threshold: 10,
+    circuit_timeout_ms: 30_000,
+    queue_timeout_ms: 60_000,
+    max_queue_size: 5000
   ],
 
   # RedisQ stream configuration
@@ -100,13 +111,15 @@ config :wanderer_kills,
     emergency_removal_percentage: 25
   ],
 
-  # Monitoring and telemetry configuration
-  monitoring: [
+  # Unified observability configuration (monitoring and telemetry)
+  observability: [
+    # Status monitoring intervals
     # 5 minutes
     status_interval_ms: 300_000,
-    health_check_interval_ms: 60_000
-  ],
-  telemetry: [
+    # 1 minute
+    health_check_interval_ms: 60_000,
+
+    # Telemetry configuration
     enabled_metrics: [:cache, :api, :circuit, :event],
     sampling_rate: 1.0,
     # 7 days in seconds
@@ -155,68 +168,29 @@ config :wanderer_kills,
     retry_delay_ms: 5_000
   ],
 
+  # Feature flags configuration
+  features: [
+    # Smart rate limiting (enables advanced features)
+    smart_rate_limiting: true,
+    # Request coalescing (requires smart_rate_limiting)
+    request_coalescing: true
+  ],
+
   # Service startup configuration
   services: [
     start_preloader: true,
     start_redisq: true
   ],
 
-  # Ship types configuration
+  # Ship types configuration - data loaded from priv/data/ship_group_ids.json
   ship_types: [
-    # Valid ship group IDs for EVE Online ships
-    valid_group_ids: [
-      25,
-      26,
-      27,
-      28,
-      29,
-      30,
-      31,
-      237,
-      324,
-      358,
-      380,
-      381,
-      419,
-      420,
-      463,
-      485,
-      513,
-      540,
-      541,
-      543,
-      547,
-      659,
-      830,
-      831,
-      832,
-      833,
-      834,
-      883,
-      893,
-      894,
-      898,
-      900,
-      902,
-      906,
-      941,
-      963,
-      1022,
-      1201,
-      1202,
-      1283,
-      1305,
-      1527,
-      1534,
-      1538,
-      1972,
-      2001
-    ],
-    # Validation thresholds
-    validation: [
-      min_validation_rate: 0.5,
-      min_record_count_for_rate_check: 10
-    ]
+    # Validation thresholds (flattened from nested validation key)
+    min_validation_rate: 0.5,
+    min_record_count_for_rate_check: 10,
+
+    # Download configuration
+    auto_update: true,
+    max_age_days: 30
   ],
 
   # WebSocket subscription validation limits
@@ -231,43 +205,6 @@ config :wanderer_kills,
     max_subscribed_characters: 50_000,
     # EVE character IDs can be up to ~3B
     max_character_id: 3_000_000_000
-  ],
-
-  # Feature flags for gradual rollout
-  features: [
-    # Enable smart rate limiting
-    smart_rate_limiting: false,
-    # Enable request coalescing
-    request_coalescing: false
-  ],
-
-  # Smart rate limiter configuration
-  smart_rate_limiter: [
-    # Token bucket configuration
-    max_tokens: 150,
-    # Increased from 100
-    refill_rate: 75,
-    # Tokens per second
-    refill_interval_ms: 1000,
-    # How often to refill
-
-    # Circuit breaker
-    circuit_failure_threshold: 10,
-    # Failures before opening circuit
-    circuit_timeout_ms: 60_000,
-    # How long circuit stays open
-
-    # Queue management
-    max_queue_size: 5000,
-    # Max queued requests
-    queue_timeout_ms: 300_000
-    # 5 minutes max queue time
-  ],
-
-  # Request coalescing configuration
-  request_coalescer: [
-    # Max time to wait for coalesced request
-    request_timeout_ms: 30_000
   ]
 
 # Configure the Phoenix endpoint

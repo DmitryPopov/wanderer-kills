@@ -9,9 +9,9 @@ defmodule WandererKillsWeb.KillStreamController do
   use WandererKillsWeb, :controller
   use OpenApiSpex.ControllerSpecs
 
-  alias WandererKills.SSE.FilterParser
   alias WandererKills.Core.Support.Error
-  alias WandererKills.Core.Support.PubSubTopics
+  alias WandererKills.Core.Support.Utils
+  alias WandererKills.SSE.FilterParser
 
   require Logger
 
@@ -130,6 +130,21 @@ defmodule WandererKillsWeb.KillStreamController do
     end
   end
 
+  operation(:cleanup,
+    summary: "Cleanup SSE connections (Debug)",
+    description: "Debug endpoint to cleanup dead SSE connections",
+    responses: %{
+      200 =>
+        {"Success", "application/json",
+         %OpenApiSpex.Schema{
+           type: :object,
+           properties: %{
+             message: %OpenApiSpex.Schema{type: :string}
+           }
+         }}
+    }
+  )
+
   @doc """
   Debug endpoint to cleanup dead SSE connections.
   """
@@ -137,6 +152,22 @@ defmodule WandererKillsWeb.KillStreamController do
     # With sse_phoenix_pubsub, connections are managed automatically
     json(conn, %{message: "SSE connections are managed automatically by sse_phoenix_pubsub"})
   end
+
+  operation(:stats,
+    summary: "Get SSE statistics (Debug)",
+    description: "Debug endpoint to get SSE connection statistics",
+    responses: %{
+      200 =>
+        {"Success", "application/json",
+         %OpenApiSpex.Schema{
+           type: :object,
+           properties: %{
+             message: %OpenApiSpex.Schema{type: :string},
+             pubsub_name: %OpenApiSpex.Schema{type: :string}
+           }
+         }}
+    }
+  )
 
   @doc """
   Debug endpoint to get SSE statistics.
@@ -148,6 +179,26 @@ defmodule WandererKillsWeb.KillStreamController do
       pubsub_name: WandererKills.PubSub
     })
   end
+
+  operation(:test_broadcast,
+    summary: "Test SSE broadcast (Debug)",
+    description: "Debug endpoint to test PubSub delivery to SSE connections",
+    responses: %{
+      200 =>
+        {"Success", "application/json",
+         %OpenApiSpex.Schema{
+           type: :object,
+           properties: %{
+             message: %OpenApiSpex.Schema{type: :string},
+             killmail_id: %OpenApiSpex.Schema{type: :integer},
+             topics: %OpenApiSpex.Schema{
+               type: :array,
+               items: %OpenApiSpex.Schema{type: :string}
+             }
+           }
+         }}
+    }
+  )
 
   @doc """
   Debug endpoint to test PubSub delivery to SSE connections.
@@ -164,20 +215,19 @@ defmodule WandererKillsWeb.KillStreamController do
     }
 
     # Broadcast using the same mechanism as real killmails
-    WandererKills.Subs.Subscriptions.Broadcaster.broadcast_killmail_update(30_000_142, [
+    WandererKills.Subs.Broadcaster.broadcast_killmail_update(30_000_142, [
       test_killmail
     ])
 
     # Also send a direct SSE test message
     alias WandererKills.SSE.Broadcaster, as: SSEBroadcaster
-    alias WandererKills.Core.Support.PubSubTopics
-    system_topic = PubSubTopics.system_topic(30_000_142)
+    system_topic = Utils.system_topic(30_000_142)
     SSEBroadcaster.broadcast_test_message(system_topic)
 
     json(conn, %{
       message: "Test broadcast sent to system 30000142",
       killmail_id: 999_999_999,
-      topics: [system_topic, PubSubTopics.all_systems_topic()]
+      topics: [system_topic, Utils.all_systems_topic()]
     })
   end
 
@@ -185,15 +235,15 @@ defmodule WandererKillsWeb.KillStreamController do
     cond do
       filters.system_ids != [] ->
         # Subscribe to specific system topics
-        Enum.map(filters.system_ids, &PubSubTopics.system_topic/1)
+        Enum.map(filters.system_ids, &Utils.system_topic/1)
 
       filters.character_ids != [] ->
         # For character tracking, we need all systems
-        [PubSubTopics.all_systems_topic()]
+        [Utils.all_systems_topic()]
 
       true ->
         # No specific filters, subscribe to all
-        [PubSubTopics.all_systems_topic()]
+        [Utils.all_systems_topic()]
     end
   end
 

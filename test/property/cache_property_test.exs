@@ -1,21 +1,19 @@
 defmodule WandererKills.Core.CachePropertyTest do
-  use ExUnit.Case
+  use WandererKills.UnifiedTestCase, async: false, mocks: false
   use ExUnitProperties
-  use WandererKills.TestCase
 
   @moduletag :property
   @moduletag area: :cache
   @moduletag performance: :medium
 
   alias WandererKills.Core.Cache
-  alias WandererKills.Test.SimpleGenerators
 
   describe "cache operation properties" do
     @tag :property
     test "cache put and get operations maintain consistency" do
       check all(
-              key <- SimpleGenerators.cache_key(),
-              value <- SimpleGenerators.cache_value(),
+              key <- string(:alphanumeric, min_length: 1, max_length: 50),
+              value <- term(),
               max_runs: 20
             ) do
         # Start with a clean cache

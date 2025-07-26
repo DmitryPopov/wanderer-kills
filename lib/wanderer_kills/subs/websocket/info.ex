@@ -6,7 +6,7 @@ defmodule WandererKills.WebSocket.Info do
   previously embedded in the WebSocketController.
   """
 
-  alias WandererKills.Subs.SubscriptionManager
+  alias WandererKills.Subs.SimpleSubscriptionManager, as: SubscriptionManager
   alias WandererKillsWeb.Endpoint
 
   @config %{

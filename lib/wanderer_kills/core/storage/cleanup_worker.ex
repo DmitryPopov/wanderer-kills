@@ -167,12 +167,10 @@ defmodule WandererKills.Core.Storage.CleanupWorker do
   end
 
   defp perform_cleanup do
-    try do
-      KillmailStore.cleanup_old_data()
-    rescue
-      e ->
-        {:error, Exception.format(:error, e, __STACKTRACE__)}
-    end
+    KillmailStore.cleanup_old_data()
+  rescue
+    e ->
+      {:error, Exception.format(:error, e, __STACKTRACE__)}
   end
 
   defp calculate_next_cleanup_time(nil) do

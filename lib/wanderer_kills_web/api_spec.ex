@@ -6,8 +6,8 @@ defmodule WandererKillsWeb.ApiSpec do
   including REST endpoints, SSE streaming, and WebSocket connections.
   """
 
-  alias OpenApiSpex.{Info, OpenApi, Paths, Server, Components}
-  alias WandererKillsWeb.{Endpoint, Router}
+  alias OpenApiSpex.{Components, Info, OpenApi, Paths, Server}
+  alias WandererKillsWeb.Router
 
   @behaviour OpenApi
 
@@ -15,7 +15,11 @@ defmodule WandererKillsWeb.ApiSpec do
   def spec do
     %OpenApi{
       servers: [
-        Server.from_endpoint(Endpoint)
+        # Use static server config instead of endpoint to avoid startup dependency
+        %Server{
+          url: "http://localhost:4004",
+          description: "Development server"
+        }
       ],
       info: %Info{
         title: "Wanderer Kills API",
@@ -46,7 +50,6 @@ defmodule WandererKillsWeb.ApiSpec do
         }
       }
     }
-    |> OpenApiSpex.resolve_schema_modules()
   end
 
   defp killmail_schema do

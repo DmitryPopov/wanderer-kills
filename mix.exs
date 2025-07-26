@@ -4,7 +4,7 @@ defmodule WandererKills.MixProject do
   def project do
     [
       app: :wanderer_kills,
-      version: "1.4.8",
+      version: "1.4.9",
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       compilers: Mix.compilers() ++ [:boundary],
@@ -34,6 +34,12 @@ defmodule WandererKills.MixProject do
             apps: [:wanderer_kills, :wanderer_kills_web]
           ]
         ]
+      ],
+
+      # Dialyzer configuration
+      dialyzer: [
+        ignore_warnings: ".dialyzer_ignore.exs",
+        plt_add_apps: [:ex_unit]
       ]
     ]
   end

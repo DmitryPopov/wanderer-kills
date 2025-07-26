@@ -7,7 +7,7 @@ defmodule WandererKillsWeb.ErrorJSON do
   # By default, Phoenix returns the following error messages:
   #
   # 400 - Bad Request
-  # 401 - Unauthorized  
+  # 401 - Unauthorized
   # 403 - Forbidden
   # 404 - Not Found
   # 422 - Unprocessable Entity

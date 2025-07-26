@@ -13,18 +13,15 @@ defmodule WandererKillsWeb.Plugs.DebugOnly do
     def call(conn, _opts), do: conn
   else
     # In production, block access
-    import Plug.Conn
-    import Phoenix.Controller
-
     def call(conn, _opts) do
       conn
-      |> put_status(:forbidden)
-      |> json(%{
+      |> Plug.Conn.put_status(:forbidden)
+      |> Phoenix.Controller.json(%{
         error: "Forbidden",
         code: "forbidden",
         message: "Debug endpoints are disabled in production"
       })
-      |> halt()
+      |> Plug.Conn.halt()
     end
   end
 end

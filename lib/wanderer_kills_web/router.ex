@@ -54,6 +54,8 @@ defmodule WandererKillsWeb.Router do
     get("/health", HealthController, :health)
     get("/status", HealthController, :status)
     get("/metrics", HealthController, :metrics)
+    get("/dashboard-debug", HealthController, :dashboard_debug)
+    get("/test-websocket-tracking", HealthController, :test_websocket_tracking)
 
     # WebSocket connection info (infrastructure/service discovery)
     get("/websocket", WebSocketController, :info)
@@ -64,6 +66,7 @@ defmodule WandererKillsWeb.Router do
   scope "/api" do
     pipe_through([:api, :open_api_spec])
 
+    # OpenAPI spec endpoint using OpenApiSpex
     get("/openapi", OpenApiSpex.Plug.RenderSpec, [])
   end
 

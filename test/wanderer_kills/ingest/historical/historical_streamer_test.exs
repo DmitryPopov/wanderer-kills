@@ -3,14 +3,20 @@ defmodule WandererKills.Ingest.Historical.HistoricalStreamerTest do
   import Mox
 
   alias WandererKills.Ingest.Historical.HistoricalStreamer
-  alias WandererKills.Ingest.Killmails.ZkbClient.Mock, as: ZkbClientMock
   alias WandererKills.Ingest.Killmails.UnifiedProcessor
+  alias WandererKills.Ingest.Killmails.ZkbClient.Mock, as: ZkbClientMock
 
   @moduletag :capture_log
 
   setup do
     # Set up mox for cross-process calls
     set_mox_global()
+
+    # Ensure TaskSupervisor is started
+    case Process.whereis(WandererKills.TaskSupervisor) do
+      nil -> start_supervised!({Task.Supervisor, name: WandererKills.TaskSupervisor})
+      _pid -> :ok
+    end
 
     # Mock configuration for testing
     test_config = %{

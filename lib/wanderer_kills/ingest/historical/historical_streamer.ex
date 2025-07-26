@@ -11,7 +11,7 @@ defmodule WandererKills.Ingest.Historical.HistoricalStreamer do
 
   alias WandererKills.Core.Support.SupervisedTask
   alias WandererKills.Ingest.Killmails.{UnifiedProcessor, ZkbClient}
-  alias WandererKills.Ingest.RateLimiter
+  alias WandererKills.Ingest.SmartRateLimiter
 
   @type state :: %{
           current_date: Date.t(),
@@ -410,7 +410,7 @@ defmodule WandererKills.Ingest.Historical.HistoricalStreamer do
     max_retries = 3
 
     # Use RateLimiter to check rate limits
-    case RateLimiter.check_rate_limit(:zkillboard) do
+    case SmartRateLimiter.check_rate_limit(:zkillboard) do
       :ok ->
         # Build minimal zkb data structure needed by the pipeline
         zkb_data = %{"hash" => hash}

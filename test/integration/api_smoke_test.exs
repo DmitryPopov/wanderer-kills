@@ -1,9 +1,10 @@
 defmodule WandererKills.ApiSmokeTest do
-  use ExUnit.Case, async: false
-  use WandererKillsWeb.ConnCase
+  use WandererKills.UnifiedTestCase, async: false, type: :conn
 
-  test "GET /ping returns pong" do
-    conn = build_conn() |> get("/ping")
+  @endpoint WandererKillsWeb.Endpoint
+
+  test "GET /ping returns pong", %{conn: conn} do
+    conn = get(conn, "/ping")
     assert conn.status == 200
     assert conn.resp_body == "pong"
   end

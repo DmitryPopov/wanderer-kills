@@ -20,7 +20,7 @@ defmodule WandererKills.Core.ShipTypes.Info do
   """
   @spec get_ship_type(integer()) :: {:ok, map()} | {:error, term()}
   def get_ship_type(type_id) when is_integer(type_id) and type_id > 0 do
-    case Cache.get(:ship_types, type_id) do
+    case Cache.get(:esi_data, "ship_type:#{type_id}") do
       {:ok, _data} = result ->
         result
 
@@ -31,7 +31,7 @@ defmodule WandererKills.Core.ShipTypes.Info do
         case fetch_from_esi(type_id) do
           {:ok, data} = result ->
             # Cache the result for future use
-            Cache.put(:ship_types, type_id, data)
+            Cache.put(:esi_data, "ship_type:#{type_id}", data)
             result
 
           error ->

@@ -14,7 +14,7 @@ defmodule WandererKillsWeb.EnhancedKillStreamController do
   use OpenApiSpex.ControllerSpecs
 
   alias Phoenix.PubSub
-  alias WandererKills.Core.Support.{Error, PubSubTopics}
+  alias WandererKills.Core.Support.{Error, Utils}
   alias WandererKills.SSE.{EventFormatter, FilterHandler, FilterParser}
   alias WandererKills.Subs.Preloader
 
@@ -264,11 +264,11 @@ defmodule WandererKillsWeb.EnhancedKillStreamController do
 
       # For system filtering, subscribe to system topics
       not Enum.empty?(filters.system_ids) ->
-        Enum.map(filters.system_ids, &PubSubTopics.system_topic/1)
+        Enum.map(filters.system_ids, &Utils.system_topic/1)
 
       # No filters, subscribe to all systems
       true ->
-        [PubSubTopics.all_systems_topic()]
+        [Utils.all_systems_topic()]
     end
   end
 

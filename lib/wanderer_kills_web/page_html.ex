@@ -47,8 +47,7 @@ defmodule WandererKillsWeb.PageHTML do
   defp stats_section(%{
          status: status,
          websocket_stats: websocket_stats,
-         uptime: uptime,
-         historical_stats: historical_stats
+         uptime: uptime
        }) do
     """
     <div class="stats-grid">
@@ -68,11 +67,6 @@ defmodule WandererKillsWeb.PageHTML do
         <h3>WebSocket Connections</h3>
         <div class="value">#{format_number(Utils.safe_get(websocket_stats, [:connections, :active]))}</div>
       </div>
-      <div class="stat-card">
-        <h3>Historical Progress</h3>
-        <div class="value">#{format_percentage(Map.get(historical_stats, :progress, 0))}</div>
-        <div class="subtitle">#{Map.get(historical_stats, :status, "Disabled")}</div>
-      </div>
     </div>
     """
   end
@@ -85,6 +79,14 @@ defmodule WandererKillsWeb.PageHTML do
          redisq_stats: redisq_stats,
          historical_stats: historical_stats
        }) do
+    # Only include historical streaming card if enabled
+    historical_card =
+      if historical_stats.enabled do
+        historical_streaming_card(historical_stats)
+      else
+        ""
+      end
+
     """
     <div class="health-grid">
       #{application_health_card(health)}
@@ -93,7 +95,7 @@ defmodule WandererKillsWeb.PageHTML do
       #{message_delivery_card(websocket_stats, status)}
       #{ets_storage_card(ets_stats)}
       #{redisq_pipeline_card(redisq_stats)}
-      #{historical_streaming_card(historical_stats)}
+      #{historical_card}
     </div>
     """
   end

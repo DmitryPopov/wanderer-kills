@@ -8,7 +8,7 @@ defmodule WandererKills.Ingest.Historical.HistoricalStreamerRetryTest do
   @moduletag :capture_log
 
   # Helper function for polling until condition is met
-  defp wait_until(condition_fn, timeout_ms \\ 1000) do
+  defp wait_until(condition_fn, timeout_ms) do
     wait_until_loop(condition_fn, timeout_ms, System.monotonic_time(:millisecond))
   end
 

@@ -95,7 +95,7 @@ defmodule WandererKills.Ingest.Killmails.CharacterCache do
   def extract_characters_cached(%Killmail{} = killmail) do
     killmail_id = killmail.killmail_id
 
-    case Cache.get(:character_extraction, killmail_id) do
+    case Cache.get(:temp_data, "character_extraction:#{killmail_id}") do
       {:ok, characters} ->
         Telemetry.character_cache(:hit, killmail_id, %{killmail_id: killmail_id})
         characters
@@ -105,7 +105,7 @@ defmodule WandererKills.Ingest.Killmails.CharacterCache do
 
         # Extract and cache - use CharacterMatcher for structs
         characters = CharacterMatcher.extract_character_ids(killmail)
-        Cache.put(:character_extraction, killmail_id, characters)
+        Cache.put(:temp_data, "character_extraction:#{killmail_id}", characters)
         characters
     end
   end
@@ -119,7 +119,7 @@ defmodule WandererKills.Ingest.Killmails.CharacterCache do
         extract_character_ids_from_map(killmail)
 
       id ->
-        case Cache.get(:character_extraction, id) do
+        case Cache.get(:temp_data, "character_extraction:#{id}") do
           {:ok, characters} ->
             Telemetry.character_cache(:hit, id, %{killmail_id: id})
             characters
@@ -129,7 +129,7 @@ defmodule WandererKills.Ingest.Killmails.CharacterCache do
 
             # Extract and cache
             characters = extract_character_ids_from_map(killmail)
-            Cache.put(:character_extraction, id, characters)
+            Cache.put(:temp_data, "character_extraction:#{id}", characters)
             characters
         end
     end
@@ -230,9 +230,14 @@ defmodule WandererKills.Ingest.Killmails.CharacterCache do
     |> Enum.each(fn killmail ->
       id = killmail["killmail_id"]
 
-      if !Cache.exists?(:character_extraction, id) do
-        characters = extract_character_ids_from_map(killmail)
-        Cache.put(:character_extraction, id, characters)
+      case Cache.exists?(:temp_data, "char_extract:#{id}") do
+        {:ok, false} ->
+          characters = extract_character_ids_from_map(killmail)
+          Cache.put(:temp_data, "char_extract:#{id}", characters)
+
+        _ ->
+          # Either exists or error occurred, skip
+          :ok
       end
     end)
 
@@ -244,38 +249,31 @@ defmodule WandererKills.Ingest.Killmails.CharacterCache do
   """
   @spec get_cache_stats() :: map()
   def get_cache_stats do
-    case get_cache_stats_internal() do
-      {:ok, stats} ->
-        # Cachex stats structure is different - it's just counts
-        hits = Map.get(stats, :hits, 0)
-        misses = Map.get(stats, :misses, 0)
-        total = hits + misses
+    stats = get_cache_stats_internal()
 
-        hit_rate = if total > 0, do: hits / total * 100, else: 0.0
+    # Cachex stats structure is different - it's just counts
+    hits = Map.get(stats, :hits, 0)
+    misses = Map.get(stats, :misses, 0)
+    total = hits + misses
 
-        # Get the size (number of entries) in the cache
-        size =
-          case cache_adapter().size(@cache_name) do
-            {:ok, count} -> count
-            _ -> 0
-          end
+    hit_rate = if total > 0, do: hits / total * 100, else: 0.0
 
-        %{
-          namespace: @namespace,
-          hits: hits,
-          misses: misses,
-          total_requests: total,
-          hit_rate: Float.round(hit_rate, 2),
-          ttl_minutes: div(@ttl_ms, 60_000),
-          entries: size
-        }
+    # Get the size (number of entries) in the cache
+    size =
+      case cache_adapter().size(@cache_name) do
+        {:ok, count} -> count
+        _ -> 0
+      end
 
-      {:error, _} ->
-        %{
-          namespace: @namespace,
-          error: "Unable to fetch cache stats"
-        }
-    end
+    %{
+      namespace: @namespace,
+      hits: hits,
+      misses: misses,
+      total_requests: total,
+      hit_rate: Float.round(hit_rate, 2),
+      ttl_minutes: div(@ttl_ms, 60_000),
+      entries: size
+    }
   end
 
   @doc """
@@ -296,15 +294,10 @@ defmodule WandererKills.Ingest.Killmails.CharacterCache do
 
   # Clear only character extraction namespace using unified cache API
   defp clear_cachex_namespace do
-    case Cache.clear_namespace(:character_extraction) do
-      {:ok, count} ->
-        Logger.debug("Cleared #{count} character cache entries")
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Failed to clear character cache namespace: #{inspect(reason)}")
-        :ok
-    end
+    # Since character extraction uses temp_data namespace with specific key pattern,
+    # we can't clear the entire namespace. Just log and return :ok
+    Logger.debug("Character extraction cache uses temp_data namespace")
+    :ok
   end
 
   # Clear entire cache for non-Cachex adapters (primarily for testing)
@@ -323,11 +316,11 @@ defmodule WandererKills.Ingest.Killmails.CharacterCache do
   # Private functions
 
   defp get_from_cache(id) do
-    Cache.get(:character_extraction, id)
+    Cache.get(:temp_data, "char_extract:#{id}")
   end
 
   defp put_in_cache(id, value) do
-    result = Cache.put(:character_extraction, id, value)
+    result = Cache.put(:temp_data, "char_extract:#{id}", value)
     Telemetry.character_cache(:put, id, %{character_count: length(value)})
     result
   end

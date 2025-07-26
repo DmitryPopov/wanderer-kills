@@ -178,18 +178,18 @@ defmodule WandererKills.Core.Storage.MemoryMonitor do
   defp calculate_memory_stats do
     # Get table-specific memory
     tables = [
-      {:killmails, :ets.info(:killmails, :memory) || 0},
-      {:system_killmails, :ets.info(:system_killmails, :memory) || 0},
-      {:system_kill_counts, :ets.info(:system_kill_counts, :memory) || 0},
-      {:system_fetch_timestamps, :ets.info(:system_fetch_timestamps, :memory) || 0},
-      {:killmail_events, :ets.info(:killmail_events, :memory) || 0},
-      {:client_offsets, :ets.info(:client_offsets, :memory) || 0}
+      {:killmails, safe_ets_memory(:killmails)},
+      {:system_killmails, safe_ets_memory(:system_killmails)},
+      {:system_kill_counts, safe_ets_memory(:system_kill_counts)},
+      {:system_fetch_timestamps, safe_ets_memory(:system_fetch_timestamps)},
+      {:killmail_events, safe_ets_memory(:killmail_events)},
+      {:client_offsets, safe_ets_memory(:client_offsets)}
     ]
 
     total_ets_memory = Enum.reduce(tables, 0, fn {_name, memory}, acc -> acc + memory end)
 
     # Get entry counts
-    killmail_count = :ets.info(:killmails, :size) || 0
+    killmail_count = safe_ets_size(:killmails)
 
     %{
       ets_memory_mb:
@@ -201,6 +201,22 @@ defmodule WandererKills.Core.Storage.MemoryMonitor do
         end)
         |> Enum.into(%{})
     }
+  end
+
+  defp safe_ets_memory(table_name) do
+    case :ets.info(table_name, :memory) do
+      :undefined -> 0
+      nil -> 0
+      memory -> memory
+    end
+  end
+
+  defp safe_ets_size(table_name) do
+    case :ets.info(table_name, :size) do
+      :undefined -> 0
+      nil -> 0
+      size -> size
+    end
   end
 
   defp perform_standard_cleanup(state) do
@@ -246,32 +262,30 @@ defmodule WandererKills.Core.Storage.MemoryMonitor do
     # This is acceptable in emergency situations where memory pressure requires
     # immediate action to prevent system failure.
 
-    try do
-      Logger.warning("[MemoryMonitor] Emergency cleanup - removing killmails older than 12 hours")
+    Logger.warning("[MemoryMonitor] Emergency cleanup - removing killmails older than 12 hours")
 
-      # For emergency cleanup, we'll just trigger multiple standard cleanups
-      # and let KillmailStore handle the details
+    # For emergency cleanup, we'll just trigger multiple standard cleanups
+    # and let KillmailStore handle the details
 
-      # First cleanup
-      CleanupWorker.cleanup_now()
+    # First cleanup
+    CleanupWorker.cleanup_now()
 
-      # Get current killmail count
-      before_count = :ets.info(:killmails, :size) || 0
+    # Get current killmail count
+    before_count = :ets.info(:killmails, :size) || 0
 
-      # If still too many, remove oldest percentage of killmails
-      if before_count > state.emergency_killmail_threshold do
-        removal_count = div(before_count * state.emergency_removal_percentage, 100)
-        remove_oldest_killmails(removal_count)
-      end
-
-      after_count = :ets.info(:killmails, :size) || 0
-      removed = before_count - after_count
-
-      Logger.warning("[MemoryMonitor] Emergency cleanup removed #{removed} killmails")
-    rescue
-      error ->
-        Logger.error("[MemoryMonitor] Emergency cleanup failed", error: inspect(error))
+    # If still too many, remove oldest percentage of killmails
+    if before_count > state.emergency_killmail_threshold do
+      removal_count = div(before_count * state.emergency_removal_percentage, 100)
+      remove_oldest_killmails(removal_count)
     end
+
+    after_count = :ets.info(:killmails, :size) || 0
+    removed = before_count - after_count
+
+    Logger.warning("[MemoryMonitor] Emergency cleanup removed #{removed} killmails")
+  rescue
+    error ->
+      Logger.error("[MemoryMonitor] Emergency cleanup failed", error: inspect(error))
   end
 
   defp remove_oldest_killmails(target_removal_count) do

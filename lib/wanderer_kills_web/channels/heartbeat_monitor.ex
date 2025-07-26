@@ -11,8 +11,8 @@ defmodule WandererKillsWeb.Channels.HeartbeatMonitor do
   use GenServer
   require Logger
 
-  alias WandererKills.Core.Observability.WebSocketStats
-  alias WandererKills.Subs.SubscriptionManager
+  alias WandererKills.Core.Observability.Metrics
+  alias WandererKills.Subs.SimpleSubscriptionManager, as: SubscriptionManager
 
   @check_interval :timer.seconds(30)
 
@@ -202,7 +202,7 @@ defmodule WandererKillsWeb.Channels.HeartbeatMonitor do
     end
 
     # Update WebSocket stats
-    WebSocketStats.track_connection(:disconnected, %{
+    Metrics.track_websocket_connection(:disconnected, %{
       user_id: conn_info.user_id,
       reason: :heartbeat_timeout
     })

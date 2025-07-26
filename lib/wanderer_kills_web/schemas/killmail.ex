@@ -5,7 +5,7 @@ defmodule WandererKillsWeb.Schemas.Killmail do
 
   require OpenApiSpex
   alias OpenApiSpex.Schema
-  alias WandererKillsWeb.Schemas.{Victim, Attacker, ZKB}
+  alias WandererKillsWeb.Schemas.{Attacker, Victim, ZKB}
 
   OpenApiSpex.schema(%{
     title: "Killmail",

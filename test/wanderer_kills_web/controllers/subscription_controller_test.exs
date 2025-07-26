@@ -1,9 +1,10 @@
 defmodule WandererKillsWeb.SubscriptionControllerTest do
-  use WandererKillsWeb.ConnCase, async: false
-  use WandererKills.Test.SharedContexts
+  use WandererKills.UnifiedTestCase, async: false, type: :conn
 
-  alias WandererKills.Subs.SubscriptionManager
-  alias WandererKills.Subs.Subscriptions.{CharacterIndex, SystemIndex}
+  import Phoenix.ConnTest
+
+  alias WandererKills.Subs.SimpleSubscriptionManager, as: SubscriptionManager
+  alias WandererKills.Subs.{CharacterIndex, SystemIndex}
 
   setup_all do
     # Clear caches and indexes once for all tests (expensive operations)
@@ -84,8 +85,8 @@ defmodule WandererKillsWeb.SubscriptionControllerTest do
       assert length(subscriptions) == 1
 
       [subscription] = subscriptions
-      assert subscription["system_ids"] == [30_000_142]
-      assert subscription["character_ids"] == [95_465_499]
+      assert subscription.system_ids == [30_000_142]
+      assert subscription.character_ids == [95_465_499]
     end
 
     test "validates subscriber_id is required", %{conn: conn} do
@@ -221,8 +222,8 @@ defmodule WandererKillsWeb.SubscriptionControllerTest do
       subscriptions = SubscriptionManager.list_subscriptions()
       [subscription] = subscriptions
 
-      assert subscription["system_ids"] == [30_000_142, 30_000_143]
-      assert subscription["character_ids"] == [123, 456, 789]
+      assert subscription.system_ids == [30_000_142, 30_000_143]
+      assert subscription.character_ids == [123, 456, 789]
     end
   end
 
@@ -298,10 +299,12 @@ defmodule WandererKillsWeb.SubscriptionControllerTest do
 
       response = json_response(conn, 200)
       assert %{"data" => stats} = response
-      assert stats["webhook"] == 2
-      assert stats["websocket"] == 0
-      assert is_map(stats["character_index"])
-      assert is_map(stats["system_index"])
+      assert stats["webhook_subscriptions"] == 2
+      assert stats["websocket_subscriptions"] == 0
+      # 1 + 2 unique characters
+      assert stats["total_characters"] == 3
+      # 2 unique systems (30_000_142 is duplicated)
+      assert stats["total_systems"] == 2
     end
   end
 
@@ -342,7 +345,7 @@ defmodule WandererKillsWeb.SubscriptionControllerTest do
       # Verify only the correct subscription was deleted
       subscriptions = SubscriptionManager.list_subscriptions()
       assert length(subscriptions) == 1
-      assert hd(subscriptions)["subscriber_id"] == "other_user"
+      assert hd(subscriptions).subscriber_id == "other_user"
     end
 
     test "handles non-existent subscriber gracefully", %{conn: conn} do

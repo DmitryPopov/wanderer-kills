@@ -22,7 +22,7 @@ defmodule WandererKills.Ingest.ESI.Client do
 
   alias WandererKills.Core.Cache
   alias WandererKills.Core.Support.Error
-  alias WandererKills.Ingest.Http.Client, as: HttpClient
+  alias WandererKills.Http.Client, as: HttpClient
 
   # Default ship group IDs that contain ship types
   @ship_group_ids [6, 7, 9, 11, 16, 17, 23]
@@ -34,7 +34,6 @@ defmodule WandererKills.Ingest.ESI.Client do
                   [:esi, :base_url],
                   "https://esi.evetech.net/latest"
                 )
-  @esi_timeout_ms Application.compile_env(:wanderer_kills, [:esi, :request_timeout_ms], 30_000)
 
   # ============================================================================
   # ESI.ClientBehaviour Implementation
@@ -42,9 +41,23 @@ defmodule WandererKills.Ingest.ESI.Client do
 
   @impl true
   def get_character(character_id) when is_integer(character_id) do
-    Cache.get_or_set(:characters, character_id, fn ->
-      fetch_from_api(:character, character_id)
-    end)
+    case Cache.get_character(character_id) do
+      {:ok, character_data} ->
+        {:ok, character_data}
+
+      {:error, %Error{type: :not_found}} ->
+        case fetch_from_api(:character, character_id) do
+          %{} = data ->
+            Cache.put_character(character_id, data)
+            {:ok, data}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @impl true
@@ -54,9 +67,23 @@ defmodule WandererKills.Ingest.ESI.Client do
 
   @impl true
   def get_corporation(corporation_id) when is_integer(corporation_id) do
-    Cache.get_or_set(:corporations, corporation_id, fn ->
-      fetch_from_api(:corporation, corporation_id)
-    end)
+    case Cache.get_corporation(corporation_id) do
+      {:ok, corp_data} ->
+        {:ok, corp_data}
+
+      {:error, %Error{type: :not_found}} ->
+        case fetch_from_api(:corporation, corporation_id) do
+          %{} = data ->
+            Cache.put_corporation(corporation_id, data)
+            {:ok, data}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @impl true
@@ -66,9 +93,23 @@ defmodule WandererKills.Ingest.ESI.Client do
 
   @impl true
   def get_alliance(alliance_id) when is_integer(alliance_id) do
-    Cache.get_or_set(:alliances, alliance_id, fn ->
-      fetch_from_api(:alliance, alliance_id)
-    end)
+    case Cache.get_alliance(alliance_id) do
+      {:ok, alliance_data} ->
+        {:ok, alliance_data}
+
+      {:error, %Error{type: :not_found}} ->
+        case fetch_from_api(:alliance, alliance_id) do
+          %{} = data ->
+            Cache.put_alliance(alliance_id, data)
+            {:ok, data}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @impl true
@@ -78,9 +119,23 @@ defmodule WandererKills.Ingest.ESI.Client do
 
   @impl true
   def get_type(type_id) when is_integer(type_id) do
-    Cache.get_or_set(:ship_types, type_id, fn ->
-      fetch_from_api(:type, type_id)
-    end)
+    case Cache.get_ship_type(type_id) do
+      {:ok, type_data} ->
+        {:ok, type_data}
+
+      {:error, %Error{type: :not_found}} ->
+        case fetch_from_api(:type, type_id) do
+          %{} = data ->
+            Cache.put_ship_type(type_id, data)
+            {:ok, data}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @impl true
@@ -90,9 +145,23 @@ defmodule WandererKills.Ingest.ESI.Client do
 
   @impl true
   def get_group(group_id) when is_integer(group_id) do
-    Cache.get_or_set(:ship_types, "group:#{group_id}", fn ->
-      fetch_from_api(:group, group_id)
-    end)
+    case Cache.get(:esi_data, "group:#{group_id}") do
+      {:ok, group_data} ->
+        {:ok, group_data}
+
+      {:error, %Error{type: :not_found}} ->
+        case fetch_from_api(:group, group_id) do
+          %{} = data ->
+            Cache.put(:esi_data, "group:#{group_id}", data)
+            {:ok, data}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @impl true
@@ -228,7 +297,7 @@ defmodule WandererKills.Ingest.ESI.Client do
   def get_killmail_raw(killmail_id, killmail_hash) do
     url = "#{esi_base_url()}/killmails/#{killmail_id}/#{killmail_hash}/"
 
-    case http_client().get_with_rate_limit(url, []) do
+    case HttpClient.get_esi(url, [], []) do
       {:ok, %{body: body}} -> {:ok, body}
       {:error, reason} -> {:error, reason}
     end
@@ -337,19 +406,6 @@ defmodule WandererKills.Ingest.ESI.Client do
            entity_id: entity_id,
            body_type: inspect(body)
          })}
-
-      _ ->
-        Logger.error("Received malformed response from ESI",
-          entity_type: entity_type,
-          entity_id: entity_id,
-          response: inspect(response)
-        )
-
-        {:error,
-         Error.esi_error(:malformed_response, "Malformed response from ESI", false, %{
-           entity_type: entity_type,
-           entity_id: entity_id
-         })}
     end
   end
 
@@ -400,45 +456,45 @@ defmodule WandererKills.Ingest.ESI.Client do
            killmail_hash: killmail_hash,
            body_type: inspect(body)
          })}
-
-      _ ->
-        Logger.error("Received malformed response from ESI for killmail",
-          killmail_id: killmail_id,
-          killmail_hash: String.slice(killmail_hash, 0, 8) <> "...",
-          response: inspect(response)
-        )
-
-        {:error,
-         Error.esi_error(:malformed_response, "Malformed response from ESI", false, %{
-           killmail_id: killmail_id,
-           killmail_hash: killmail_hash
-         })}
     end
   end
 
-  defp handle_killmail_response({:error, %{status: 404}}, killmail_id, killmail_hash) do
+  defp handle_killmail_response(
+         {:error, %Error{type: :not_found} = error},
+         killmail_id,
+         killmail_hash
+       ) do
     {:error,
      Error.esi_error(:not_found, "Killmail not found", false, %{
        killmail_id: killmail_id,
-       killmail_hash: killmail_hash
+       killmail_hash: killmail_hash,
+       original_error: error
      })}
   end
 
-  defp handle_killmail_response({:error, %{status: 403}}, killmail_id, killmail_hash) do
+  defp handle_killmail_response(
+         {:error, %Error{type: :rate_limited} = error},
+         killmail_id,
+         killmail_hash
+       ) do
     {:error,
      Error.esi_error(:forbidden, "Killmail access forbidden", false, %{
        killmail_id: killmail_id,
-       killmail_hash: killmail_hash
+       killmail_hash: killmail_hash,
+       original_error: error
      })}
   end
 
-  defp handle_killmail_response({:error, %{status: status}}, killmail_id, killmail_hash)
-       when status >= 500 do
+  defp handle_killmail_response(
+         {:error, %Error{type: :server_error} = error},
+         killmail_id,
+         killmail_hash
+       ) do
     {:error,
      Error.esi_error(:server_error, "ESI server error", true, %{
        killmail_id: killmail_id,
        killmail_hash: killmail_hash,
-       status: status
+       original_error: error
      })}
   end
 
@@ -454,7 +510,7 @@ defmodule WandererKills.Ingest.ESI.Client do
   defp fetch_from_api(entity_type, entity_id) do
     url = build_url(entity_type, entity_id)
 
-    http_client().get(url, default_headers(), request_options())
+    HttpClient.get_esi(url, default_headers(), request_options())
     |> handle_http_response({entity_type, entity_id}, &parse_response/3)
   end
 
@@ -466,7 +522,7 @@ defmodule WandererKills.Ingest.ESI.Client do
       killmail_hash: String.slice(killmail_hash, 0, 8) <> "..."
     )
 
-    http_client().get(url, default_headers(), request_options())
+    HttpClient.get_esi(url, default_headers(), request_options())
     |> handle_killmail_response(killmail_id, killmail_hash)
   end
 
@@ -577,22 +633,13 @@ defmodule WandererKills.Ingest.ESI.Client do
 
   defp esi_base_url, do: @esi_base_url
 
-  defp http_client do
-    Application.get_env(:wanderer_kills, :http, [])[:client] || HttpClient
-  end
-
   defp default_headers do
-    [
-      {"User-Agent", "WandererKills/1.0"},
-      {"Accept", "application/json"}
-    ]
+    # EVE API doesn't require specific headers
+    []
   end
 
   defp request_options do
-    [
-      timeout: @esi_timeout_ms,
-      recv_timeout: @esi_timeout_ms
-    ]
+    []
   end
 
   @doc """

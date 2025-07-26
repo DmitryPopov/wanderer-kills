@@ -1,5 +1,7 @@
 defmodule WandererKillsWeb.KillStreamControllerTest do
-  use WandererKillsWeb.ConnCase, async: false
+  use WandererKills.UnifiedTestCase, async: false, type: :conn
+
+  import Phoenix.ConnTest
 
   describe "GET /api/v1/kills/stream" do
     # Note: We cannot easily test successful SSE streaming in unit tests
