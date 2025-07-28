@@ -1305,18 +1305,31 @@ defmodule WandererKills.Core.Observability.Metrics do
   end
 
   # Safe metric atom creation with pattern validation to prevent atom table exhaustion
+  @spec safe_metric_atom(String.t()) :: atom() | :invalid_metric | :table_size_limit_reached
   defp safe_metric_atom(string) when is_binary(string) do
     if valid_metric_name?(string) do
-      case :ets.lookup(@table_name, {:metric_atom, string}) do
-        [{_, atom}] -> atom
-        [] -> create_and_store_metric_atom(string)
-      end
+      lookup_or_create_metric_atom(string)
     else
       Logger.warning("Invalid metric name attempted", metric: string)
       :invalid_metric
     end
   end
 
+  @spec lookup_or_create_metric_atom(String.t()) :: atom() | :table_size_limit_reached
+  defp lookup_or_create_metric_atom(string) do
+    case :ets.lookup(@table_name, {:metric_atom, string}) do
+      [{_, atom}] ->
+        atom
+
+      [] ->
+        case create_and_store_metric_atom(string) do
+          :table_size_limit_reached -> :table_size_limit_reached
+          atom when is_atom(atom) -> atom
+        end
+    end
+  end
+
+  @spec create_and_store_metric_atom(String.t()) :: atom() | :table_size_limit_reached
   defp create_and_store_metric_atom(string) do
     # Check current size of metric atoms in the table
     current_count = count_metric_atoms()
@@ -1356,9 +1369,17 @@ defmodule WandererKills.Core.Observability.Metrics do
   end
 
   # Count the number of metric atoms currently stored in the table
+  @spec count_metric_atoms() :: non_neg_integer()
   defp count_metric_atoms do
-    match_spec = [{{:metric_atom, :"$1"}, :"$2", []}]
-    :ets.select_count(@table_name, match_spec)
+    case :ets.info(@table_name) do
+      :undefined ->
+        0
+
+      _ ->
+        # Count only metric_atom entries using match
+        pattern = {{:metric_atom, :"$1"}, :"$2"}
+        :ets.match(@table_name, pattern) |> length()
+    end
   end
 
   # Check if a metric name matches any of our allowed patterns

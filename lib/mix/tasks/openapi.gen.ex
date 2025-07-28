@@ -19,26 +19,22 @@ defmodule Mix.Tasks.Openapi.Gen do
 
   @shortdoc "Generate OpenAPI specification"
 
+  @impl Mix.Task
   def run(args) do
     # Parse command line arguments
     {opts, _argv, _} = OptionParser.parse(args, switches: [output: :string])
     output_file = opts[:output] || "openapi.json"
 
     # Start minimal required applications
-    Mix.Task.run("loadpaths", [])
-
     try do
       Application.ensure_all_started(:logger)
       Application.ensure_all_started(:jason)
     rescue
       error ->
-        Mix.shell().error("Failed to start required applications: #{inspect(error)}")
-        Mix.shell().error("Error details: #{Exception.message(error)}")
+        IO.puts("Failed to start required applications: #{inspect(error)}")
+        IO.puts("Error details: #{Exception.message(error)}")
         exit(1)
     end
-
-    # Load the application without starting the full supervision tree
-    Mix.Task.run("compile", [])
 
     # Generate the OpenAPI specification
     try do
@@ -48,12 +44,12 @@ defmodule Mix.Tasks.Openapi.Gen do
       # Write to file
       File.write!(output_file, json_spec)
 
-      Mix.shell().info("OpenAPI specification generated: #{output_file}")
-      Mix.shell().info("Specification contains #{map_size(spec.paths)} paths")
+      IO.puts("OpenAPI specification generated: #{output_file}")
+      IO.puts("Specification contains #{map_size(spec.paths)} paths")
     rescue
       error ->
-        Mix.shell().error("Failed to generate OpenAPI specification: #{inspect(error)}")
-        Mix.shell().error("Error details: #{Exception.message(error)}")
+        IO.puts("Failed to generate OpenAPI specification: #{inspect(error)}")
+        IO.puts("Error details: #{Exception.message(error)}")
         exit(1)
     end
   end

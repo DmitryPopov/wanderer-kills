@@ -296,13 +296,6 @@ defmodule WandererKills.Core.Cache do
         |> Stream.filter(fn {key, _} -> String.starts_with?(key, "#{namespace}:") end)
         |> Stream.each(fn {key, _} -> Cachex.del(@cache_name, key) end)
         |> Stream.run()
-
-      _ ->
-        # For other adapters, iterate through namespaced keys
-        # This is a fallback that may not be as efficient
-        Logger.warning(
-          "clear_namespace may not be fully supported for adapter: #{@cache_adapter}"
-        )
     end
 
     :ok
@@ -368,14 +361,6 @@ defmodule WandererKills.Core.Cache do
           # Use Cachex.stream for Cachex adapter
           stream = Cachex.stream(@cache_name, [])
           calculate_cachex_namespace_stats(stream, namespace)
-
-        _ ->
-          # For other adapters, return basic stats
-          Logger.warning(
-            "namespace_stats may not be fully supported for adapter: #{@cache_adapter}"
-          )
-
-          {0, 0}
       end
 
     %{

@@ -22,6 +22,7 @@ defmodule WandererKills.Ingest.ESI.Client do
 
   alias WandererKills.Core.Cache
   alias WandererKills.Core.Support.Error
+  alias WandererKills.Core.Support.Utils
   alias WandererKills.Http.Client, as: HttpClient
 
   # Default ship group IDs that contain ship types
@@ -297,10 +298,15 @@ defmodule WandererKills.Ingest.ESI.Client do
   def get_killmail_raw(killmail_id, killmail_hash) do
     url = "#{esi_base_url()}/killmails/#{killmail_id}/#{killmail_hash}/"
 
-    case HttpClient.get_esi(url, [], []) do
-      {:ok, %{body: body}} -> {:ok, body}
-      {:error, reason} -> {:error, reason}
-    end
+    Utils.retry_http_operation(
+      fn ->
+        case HttpClient.get_esi(url, [], []) do
+          {:ok, %{body: body}} -> {:ok, body}
+          {:error, reason} -> {:error, reason}
+        end
+      end,
+      operation_name: "ESI get raw killmail #{killmail_id}"
+    )
   end
 
   # ============================================================================
@@ -510,7 +516,19 @@ defmodule WandererKills.Ingest.ESI.Client do
   defp fetch_from_api(entity_type, entity_id) do
     url = build_url(entity_type, entity_id)
 
-    HttpClient.get_esi(url, default_headers(), request_options())
+    result =
+      Utils.retry_http_operation(
+        fn ->
+          HttpClient.get_esi(url, default_headers(), request_options())
+        end,
+        operation_name: "ESI fetch #{entity_type} #{entity_id}"
+      )
+
+    # Unwrap the double-wrapped result from retry_http_operation
+    case result do
+      {:ok, http_result} -> http_result
+      error -> error
+    end
     |> handle_http_response({entity_type, entity_id}, &parse_response/3)
   end
 
@@ -522,7 +540,19 @@ defmodule WandererKills.Ingest.ESI.Client do
       killmail_hash: String.slice(killmail_hash, 0, 8) <> "..."
     )
 
-    HttpClient.get_esi(url, default_headers(), request_options())
+    result =
+      Utils.retry_http_operation(
+        fn ->
+          HttpClient.get_esi(url, default_headers(), request_options())
+        end,
+        operation_name: "ESI fetch killmail #{killmail_id}"
+      )
+
+    # Unwrap the double-wrapped result from retry_http_operation
+    case result do
+      {:ok, http_result} -> http_result
+      error -> error
+    end
     |> handle_killmail_response(killmail_id, killmail_hash)
   end
 
