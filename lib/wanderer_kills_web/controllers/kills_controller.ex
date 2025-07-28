@@ -13,6 +13,7 @@ defmodule WandererKillsWeb.KillsController do
   require Logger
   alias WandererKills.Core.Storage.KillmailStore
   alias WandererKills.Core.Support.Error
+  alias WandererKills.Core.Support.Utils
   alias WandererKills.Ingest.Killmails.ZkbClient
 
   operation(:list,
@@ -67,7 +68,10 @@ defmodule WandererKillsWeb.KillsController do
       # Convert parameters to ZkbClient format
       opts = [past_seconds: since_hours * 3600]
 
-      case ZkbClient.fetch_system_killmails(system_id, opts) do
+      case Utils.retry_http_operation(
+             fn -> ZkbClient.fetch_system_killmails(system_id, opts) end,
+             operation_name: "ZKB fetch system killmails #{system_id}"
+           ) do
         {:ok, killmails} ->
           # Apply limit and time filtering
           filtered_killmails =
