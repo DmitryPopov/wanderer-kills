@@ -48,10 +48,10 @@ config :wanderer_kills,
     mode: :simple,
 
     # Simple mode configuration (backward compatible with old RateLimiter)
-    zkb_capacity: 100,
-    zkb_refill_rate: 50,
-    esi_capacity: 100,
-    esi_refill_rate: 100,
+    zkb_capacity: 300,
+    zkb_refill_rate: 200,
+    esi_capacity: 500,
+    esi_refill_rate: 3000,
 
     # Advanced mode configuration (only used when mode: :advanced)
     max_tokens: 150,

@@ -218,8 +218,7 @@ defmodule WandererKills.Core.Support.Utils do
   end
 
   defp do_retry(fun, retries_left, backoff_state, rescue_only, operation_name) do
-    result = fun.()
-    {:ok, result}
+    fun.()
   rescue
     error ->
       if error.__struct__ in rescue_only do

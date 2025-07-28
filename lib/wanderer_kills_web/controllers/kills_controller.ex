@@ -241,18 +241,35 @@ defmodule WandererKillsWeb.KillsController do
   def show(conn, %{"killmail_id" => killmail_id_str}) do
     case validate_killmail_id(killmail_id_str) do
       {:ok, killmail_id} ->
-        Logger.debug("Fetching specific killmail", killmail_id: killmail_id)
-
-        case KillmailStore.get(killmail_id) do
-          {:ok, killmail} ->
-            render_success(conn, killmail)
-
-          {:error, _} ->
-            render_error(conn, 404, "Killmail not found", "NOT_FOUND")
-        end
+        fetch_killmail_with_fallback(conn, killmail_id)
 
       {:error, %Error{}} ->
         render_error(conn, 400, "Invalid killmail ID format", "INVALID_KILLMAIL_ID")
+    end
+  end
+
+  defp fetch_killmail_with_fallback(conn, killmail_id) do
+    Logger.debug("Fetching specific killmail", killmail_id: killmail_id)
+
+    case KillmailStore.get(killmail_id) do
+      {:ok, killmail} ->
+        render_success(conn, killmail)
+
+      {:error, _} ->
+        fetch_killmail_from_zkb(conn, killmail_id)
+    end
+  end
+
+  defp fetch_killmail_from_zkb(conn, killmail_id) do
+    case Utils.retry_http_operation(
+           fn -> ZkbClient.fetch_killmail(killmail_id) end,
+           operation_name: "ZKB fetch individual killmail #{killmail_id}"
+         ) do
+      {:ok, killmail} ->
+        render_success(conn, killmail)
+
+      {:error, _} ->
+        render_error(conn, 404, "Killmail not found", "NOT_FOUND")
     end
   end
 

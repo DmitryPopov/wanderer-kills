@@ -524,11 +524,7 @@ defmodule WandererKills.Ingest.ESI.Client do
         operation_name: "ESI fetch #{entity_type} #{entity_id}"
       )
 
-    # Unwrap the double-wrapped result from retry_http_operation
-    case result do
-      {:ok, http_result} -> http_result
-      error -> error
-    end
+    result
     |> handle_http_response({entity_type, entity_id}, &parse_response/3)
   end
 
@@ -548,11 +544,7 @@ defmodule WandererKills.Ingest.ESI.Client do
         operation_name: "ESI fetch killmail #{killmail_id}"
       )
 
-    # Unwrap the double-wrapped result from retry_http_operation
-    case result do
-      {:ok, http_result} -> http_result
-      error -> error
-    end
+    result
     |> handle_killmail_response(killmail_id, killmail_hash)
   end
 
