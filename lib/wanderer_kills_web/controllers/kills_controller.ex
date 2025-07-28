@@ -265,11 +265,54 @@ defmodule WandererKillsWeb.KillsController do
            fn -> ZkbClient.fetch_killmail(killmail_id) end,
            operation_name: "ZKB fetch individual killmail #{killmail_id}"
          ) do
-      {:ok, killmail} ->
-        render_success(conn, killmail)
+      {:ok, raw_killmail} ->
+        # Process through enrichment pipeline for full API response
+        case enrich_killmail_for_api(raw_killmail) do
+          {:ok, enriched_killmail} ->
+            render_success(conn, enriched_killmail)
+
+          {:error, _} ->
+            # Fallback to raw data if enrichment fails
+            render_success(conn, raw_killmail)
+        end
 
       {:error, _} ->
         render_error(conn, 404, "Killmail not found", "NOT_FOUND")
+    end
+  end
+
+  defp enrich_killmail_for_api(raw_killmail) do
+    alias WandererKills.Ingest.Killmails.UnifiedProcessor
+    alias WandererKills.Domain.Killmail
+
+    # Process through enrichment pipeline without storing
+    case UnifiedProcessor.process_killmail(
+           raw_killmail,
+           DateTime.add(DateTime.utc_now(), -7, :day),
+           store: false,
+           enrich: true
+         ) do
+      {:ok, %Killmail{} = enriched_killmail} ->
+        # Convert to map for JSON response
+        {:ok, Killmail.to_map(enriched_killmail)}
+
+      {:ok, :kill_older} ->
+        # Older killmail, return enriched version anyway
+        case UnifiedProcessor.process_killmail(
+               raw_killmail,
+               DateTime.add(DateTime.utc_now(), -365, :day),
+               store: false,
+               enrich: true
+             ) do
+          {:ok, %Killmail{} = enriched_killmail} ->
+            {:ok, Killmail.to_map(enriched_killmail)}
+
+          error ->
+            error
+        end
+
+      error ->
+        error
     end
   end
 
