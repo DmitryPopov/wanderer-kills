@@ -465,6 +465,48 @@ defmodule WandererKillsWeb.KillmailChannel do
     {:noreply, socket}
   end
 
+  # Handle killmail_update messages from Broadcaster
+  def handle_info(
+        %{
+          type: :killmail_update,
+          system_id: system_id,
+          kills: killmails,
+          timestamp: timestamp
+        },
+        socket
+      ) do
+    Logger.debug("[WebSocket] Received killmail_update from Broadcaster",
+      user_id: socket.assigns.user_id,
+      subscription_id: socket.assigns.subscription_id,
+      system_id: system_id,
+      killmail_count: length(killmails)
+    )
+
+    # Build a subscription-like structure for filtering
+    subscription = %{
+      "system_ids" => MapSet.to_list(socket.assigns.subscribed_systems),
+      "character_ids" => MapSet.to_list(socket.assigns[:subscribed_characters] || MapSet.new())
+    }
+
+    # Filter killmails based on both system and character subscriptions
+    filtered_killmails = Filter.filter_killmails(killmails, subscription)
+
+    if length(filtered_killmails) > 0 do
+      # Use structs directly for lazy JSON encoding (Jason.Encoder is implemented)
+      push(socket, "killmail_update", %{
+        system_id: system_id,
+        killmails: filtered_killmails,
+        timestamp: DateTime.to_iso8601(timestamp),
+        preload: false
+      })
+
+      # Track kills sent to websocket
+      Metrics.increment_kills_sent(:realtime, length(filtered_killmails))
+    end
+
+    {:noreply, socket}
+  end
+
   # Handle any unmatched PubSub messages
   def handle_info(message, socket) do
     Logger.debug("[DEBUG] Unhandled PubSub message",

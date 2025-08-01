@@ -390,8 +390,6 @@ defmodule WandererKills.Ingest.RedisQ do
         {:ok, :kill_older}
 
       {:ok, enriched_killmail} ->
-        Logger.debug(fn -> "[RedisQ] Successfully parsed & stored new killmail." end)
-
         # Broadcast kill update via PubSub using the enriched killmail
         broadcast_killmail_update_enriched(enriched_killmail)
 
@@ -552,6 +550,8 @@ defmodule WandererKills.Ingest.RedisQ do
   # Broadcast killmail update to PubSub subscribers using enriched killmail
   defp broadcast_killmail_update_enriched(%Killmail{} = killmail) do
     system_id = killmail.system_id
+
+    Logger.info("[RedisQ] Broadcasting kill #{killmail.killmail_id} to system #{system_id}")
 
     # Track system activity for statistics
     send(self(), {:track_system, system_id})
