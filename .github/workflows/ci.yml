@@ -278,7 +278,7 @@ jobs:
 
   docker:
     name: Build and Push Docker Image
-    needs: [test]
+    needs: [test, auto-tag]
     runs-on: ubuntu-latest
     # Run on push to main (always) or on version tags
     if: |
@@ -314,21 +314,24 @@ jobs:
             VERSION_TAG="${GITHUB_REF#refs/tags/}"
             echo "Running on tag: $VERSION_TAG"
           else
-            # We're running after auto-tag created new tags
-            # Fetch tags first to get the newly created ones
-            git fetch --tags --force
-            
-            # Now get the current tag on this commit
-            CURRENT_TAG=$(git describe --exact-match --tags HEAD 2>/dev/null || echo "")
-            VERSION_TAG="$CURRENT_TAG"
-            
-            if [[ -z "$VERSION_TAG" ]]; then
-              # If no tag found, extract version from mix.exs as fallback
-              VERSION=$(grep -E '^\s+version:' mix.exs | head -1 | grep -o '"[^"]*"' | tr -d '"')
-              VERSION_TAG="v$VERSION"
-              echo "No tag found on HEAD, using version from mix.exs: $VERSION_TAG"
+            # We're running after auto-tag, so tags should exist
+            # Use the tag from auto-tag output if available
+            if [[ -n "${{ needs.auto-tag.outputs.tag }}" ]]; then
+              VERSION_TAG="${{ needs.auto-tag.outputs.tag }}"
+              echo "Using tag from auto-tag job: $VERSION_TAG"
             else
-              echo "Using tag from HEAD: $VERSION_TAG"
+              # Fallback: fetch tags and get current tag
+              git fetch --tags --force
+              VERSION_TAG=$(git describe --exact-match --tags HEAD 2>/dev/null || echo "")
+              
+              if [[ -z "$VERSION_TAG" ]]; then
+                # Last resort: extract from mix.exs
+                VERSION=$(grep -E '^\s+version:' mix.exs | head -1 | grep -o '"[^"]*"' | tr -d '"')
+                VERSION_TAG="v$VERSION"
+                echo "Using version from mix.exs: $VERSION_TAG"
+              else
+                echo "Using tag from HEAD: $VERSION_TAG"
+              fi
             fi
           fi
 
@@ -616,7 +619,7 @@ jobs:
 
   deploy:
     name: Deploy to Server
-    needs: [docker]
+    needs: [docker, auto-tag]
     runs-on: ubuntu-latest
     # Deploy on push to main branch (uses latest tag)
     if: github.ref == 'refs/heads/main'
