@@ -53,11 +53,14 @@ defmodule WandererKills.Application do
       {:ok, pid} ->
         Logger.info("[Application] Supervisor started successfully")
         # Start ship type update asynchronously without blocking application startup
-        Task.Supervisor.start_child(WandererKills.TaskSupervisor, fn ->
-          # Give the system a moment to fully start
-          Process.sleep(1000)
-          start_ship_type_update()
-        end)
+        SupervisedTask.start_child(
+          fn ->
+            Process.sleep(1000)
+            start_ship_type_update()
+          end,
+          task_name: "startup_ship_type_update",
+          metadata: %{module: __MODULE__}
+        )
 
         Logger.info("[Application] Application startup completed successfully")
         {:ok, pid}
@@ -77,14 +80,17 @@ defmodule WandererKills.Application do
        pools: %{
          :default => [size: 10, count: 2],
          "https://zkillredisq.stream" => [
-           size: 5,
+           size: 2,
            count: 1,
-           conn_opts: [timeout: 30_000]
+           conn_opts: [timeout: 60_000],
+           # >45s poll timeout; adjust via config if needed
+           conn_max_idle_time: 90_000
          ]
        }},
       WandererKills.Core.EtsOwner,
       Task.Supervisor.child_spec(name: WandererKills.TaskSupervisor),
       {Phoenix.PubSub, name: WandererKills.PubSub},
+      WandererKills.Http.ConnectionMonitor,
       WandererKills.Subs.SimpleSubscriptionManager,
       WandererKills.Ingest.HistoricalFetcher,
       WandererKills.Core.Storage.CleanupWorker,
@@ -169,7 +175,11 @@ defmodule WandererKills.Application do
 
   defp maybe_redisq(children) do
     if Config.start_redisq?() do
-      children ++ [WandererKills.Ingest.RedisQ]
+      children ++
+        [
+          WandererKills.Ingest.CircuitBreakerMonitor,
+          WandererKills.Ingest.RedisQ
+        ]
     else
       children
     end

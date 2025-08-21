@@ -1,4 +1,5 @@
 defmodule WandererKillsWeb.HealthController do
+  @connection_error_threshold 3
   @moduledoc """
   Health check and monitoring endpoints.
 
@@ -13,7 +14,10 @@ defmodule WandererKillsWeb.HealthController do
   alias WandererKills.Core.Observability.Health
   alias WandererKills.Core.Observability.Metrics
   alias WandererKills.Core.Observability.Monitoring
+  alias WandererKills.Core.Support.Error
   alias WandererKills.Dashboard
+  alias WandererKills.Http.ConnectionMonitor
+  alias WandererKills.Ingest.RedisQ
   alias WandererKills.Utils
 
   @doc """
@@ -33,24 +37,130 @@ defmodule WandererKillsWeb.HealthController do
   def health(conn, _params) do
     case Health.check_health() do
       {:ok, health_status} ->
-        status_code = if health_status.healthy, do: 200, else: 503
-        response = Map.put(health_status, :timestamp, DateTime.utc_now() |> DateTime.to_iso8601())
-
-        conn
-        |> put_status(status_code)
-        |> json(response)
+        handle_health_success(conn, health_status)
 
       {:error, reason} ->
-        response = %{
-          error: "Health check failed",
+        handle_health_error(conn, reason)
+    end
+  end
+
+  defp handle_health_success(conn, health_status) do
+    circuit_status = get_circuit_status()
+    connection_status = get_connection_status()
+
+    overall_healthy = calculate_overall_health(health_status, circuit_status, connection_status)
+    status_code = if overall_healthy, do: 200, else: 503
+    timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    response =
+      build_health_response(
+        health_status,
+        circuit_status,
+        connection_status,
+        overall_healthy,
+        timestamp
+      )
+
+    conn
+    |> put_status(status_code)
+    |> json(response)
+  end
+
+  defp handle_health_error(conn, reason) do
+    error =
+      Error.new(
+        :system,
+        :health_check_failed,
+        "Health check failed",
+        false,
+        %{
           reason: inspect(reason),
           timestamp: DateTime.utc_now() |> DateTime.to_iso8601()
         }
+      )
 
-        conn
-        |> put_status(503)
-        |> json(response)
+    conn
+    |> put_status(503)
+    |> json(%{error: Error.to_map(error)})
+  end
+
+  defp get_circuit_status do
+    # Prefer ETS-cached status; fall back to a bounded GenServer call.
+    with {:ok, status} <- RedisQ.get_circuit_status_cached(),
+         true <- is_map(status) do
+      status
+    else
+      _ ->
+        try do
+          case RedisQ.get_circuit_status(1000) do
+            {:ok, status} when is_map(status) ->
+              status
+
+            other ->
+              Logger.error(
+                "[HealthController] Unexpected circuit status reply: #{inspect(other)}"
+              )
+
+              %{circuit_state: :unknown, error: "invalid_response"}
+          end
+        rescue
+          e ->
+            Logger.error("[HealthController] Exception getting circuit status: #{inspect(e)}")
+            %{circuit_state: :unknown, error: "failed"}
+        catch
+          :exit, {:timeout, _} ->
+            %{circuit_state: :unknown, error: "timeout"}
+
+          :exit, {:noproc, _} ->
+            %{circuit_state: :unknown, error: "not_running"}
+        end
     end
+  end
+
+  defp get_connection_status do
+    try do
+      case ConnectionMonitor.get_status() do
+        status when is_map(status) ->
+          status
+
+        other ->
+          Logger.error("[HealthController] Unexpected connection status reply: #{inspect(other)}")
+          %{status: :unknown, error: "invalid_response"}
+      end
+    rescue
+      e ->
+        Logger.error("[HealthController] Exception getting connection status: #{inspect(e)}")
+        %{status: :unknown, error: "failed"}
+    catch
+      :exit, {:timeout, _} ->
+        %{status: :unknown, error: "timeout"}
+
+      :exit, {:noproc, _} ->
+        %{status: :unknown, error: "not_running"}
+    end
+  end
+
+  defp calculate_overall_health(health_status, circuit_status, connection_status) do
+    circuit_healthy = circuit_status.circuit_state != :open
+
+    connections_healthy =
+      Map.get(connection_status, :consecutive_timeout_errors, 0) < @connection_error_threshold
+
+    health_status.healthy && circuit_healthy && connections_healthy
+  end
+
+  defp build_health_response(
+         health_status,
+         circuit_status,
+         connection_status,
+         overall_healthy,
+         timestamp
+       ) do
+    health_status
+    |> Map.put(:circuit_breaker, circuit_status)
+    |> Map.put(:connection_monitor, connection_status)
+    |> Map.put(:healthy, overall_healthy)
+    |> Map.put(:timestamp, timestamp)
   end
 
   @doc """

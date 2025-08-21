@@ -41,9 +41,29 @@ defmodule WandererKills.Ingest.RedisQ do
   @backoff_factor Application.compile_env(:wanderer_kills, [:redisq, :backoff_factor], 2)
   @task_timeout_ms Application.compile_env(:wanderer_kills, [:redisq, :task_timeout_ms], 10_000)
 
+  # Circuit breaker configuration
+  @max_consecutive_errors Application.compile_env(
+                            :wanderer_kills,
+                            [:redisq, :max_consecutive_errors],
+                            10
+                          )
+  # 5 minutes
+  @circuit_reset_timeout_ms Application.compile_env(
+                              :wanderer_kills,
+                              [:redisq, :circuit_reset_timeout_ms],
+                              300_000
+                            )
+
   defmodule State do
     @moduledoc false
-    defstruct [:queue_id, :backoff_ms, :stats]
+    defstruct [
+      :queue_id,
+      :backoff_ms,
+      :stats,
+      :consecutive_errors,
+      :circuit_state,
+      :circuit_opened_at
+    ]
   end
 
   #
@@ -90,13 +110,53 @@ defmodule WandererKills.Ingest.RedisQ do
   end
 
   @doc """
+  Gets current circuit breaker status.
+  """
+  @spec get_circuit_status() :: {:ok, map()}
+  def get_circuit_status do
+    get_circuit_status(5000)
+  end
+
+  @doc """
+  Gets current circuit breaker status with custom timeout.
+  """
+  @spec get_circuit_status(timeout()) :: {:ok, map()}
+  def get_circuit_status(timeout) do
+    GenServer.call(__MODULE__, :get_circuit_status, timeout)
+  end
+
+  @doc """
+  Gets circuit breaker status from ETS without blocking.
+  Returns cached status or default if not available.
+  """
+  @spec get_circuit_status_cached() :: {:ok, map()}
+  def get_circuit_status_cached do
+    case :ets.lookup(EtsOwner.wanderer_kills_stats_table(), :redisq_circuit_status) do
+      [{:redisq_circuit_status, status}] ->
+        {:ok, status}
+
+      _ ->
+        # Return default status if not in ETS
+        {:ok,
+         %{
+           circuit_state: :unknown,
+           consecutive_errors: 0,
+           max_consecutive_errors: @max_consecutive_errors,
+           circuit_opened_at: nil,
+           circuit_reset_timeout_ms: @circuit_reset_timeout_ms,
+           cached: true
+         }}
+    end
+  end
+
+  @doc """
   Starts listening to RedisQ killmail stream.
   """
   @spec start_listening() :: :ok | {:error, term()}
   def start_listening do
     url = "#{base_url()}?queueID=wanderer-kills"
 
-    case HttpClient.get(url) do
+    case HttpClient.get_redisq(url) do
       {:ok, %{body: body}} ->
         handle_response(body)
 
@@ -122,6 +182,7 @@ defmodule WandererKills.Ingest.RedisQ do
       legacy_kills: 0,
       errors: 0,
       no_kills_count: 0,
+      circuit_open_skips: 0,
       last_reset: DateTime.utc_now(),
       last_kill_received_at: nil,
       systems_active: MapSet.new(),
@@ -131,16 +192,33 @@ defmodule WandererKills.Ingest.RedisQ do
       total_kills_skipped: 0,
       total_legacy_kills: 0,
       total_errors: 0,
-      total_no_kills_count: 0
+      total_no_kills_count: 0,
+      total_circuit_open_skips: 0
     }
 
-    state = %State{queue_id: queue_id, backoff_ms: initial_backoff, stats: stats}
+    state = %State{
+      queue_id: queue_id,
+      backoff_ms: initial_backoff,
+      stats: stats,
+      consecutive_errors: 0,
+      circuit_state: :closed,
+      circuit_opened_at: nil
+    }
+
     {:ok, state, {:continue, :start_polling}}
   end
 
   @impl true
   def handle_continue(:start_polling, state) do
     Logger.info("[RedisQ] Starting polling with queue ID: #{state.queue_id}")
+
+    # Initialize circuit status in ETS
+    update_circuit_status_ets(
+      state.circuit_state,
+      state.consecutive_errors,
+      state.circuit_opened_at
+    )
+
     # Schedule the very first poll after the idle interval
     schedule_poll(@idle_interval_ms)
     # Schedule the first summary log
@@ -149,20 +227,75 @@ defmodule WandererKills.Ingest.RedisQ do
   end
 
   @impl true
-  def handle_info(:poll_kills, %State{queue_id: qid, backoff_ms: backoff, stats: stats} = state) do
-    Logger.debug("[RedisQ] Polling RedisQ (queue ID: #{qid})")
-    result = do_poll(qid)
+  def handle_info(:poll_kills, %State{} = state) do
+    # Check circuit breaker state
+    case check_circuit_breaker(state) do
+      {:ok, state} ->
+        # Circuit is closed or half-open, proceed with polling
+        Logger.debug("[RedisQ] Polling RedisQ (queue ID: #{state.queue_id})")
+        result = do_poll(state.queue_id)
 
-    # Update statistics based on result
-    new_stats = update_stats(stats, result)
+        # Update statistics based on result
+        new_stats = update_stats(state.stats, result)
 
-    # Update ETS immediately for real-time dashboard metrics
-    update_ets_stats(new_stats)
+        # Update ETS immediately for real-time dashboard metrics
+        update_ets_stats(new_stats)
 
-    {delay_ms, new_backoff} = next_schedule(result, backoff)
-    schedule_poll(delay_ms)
+        # Update error counter and circuit state
+        {new_consecutive_errors, new_circuit_state, new_circuit_opened_at} =
+          update_circuit_state(
+            result,
+            state.consecutive_errors,
+            state.circuit_state,
+            state.circuit_opened_at
+          )
 
-    {:noreply, %State{state | backoff_ms: new_backoff, stats: new_stats}}
+        {delay_ms, new_backoff} = next_schedule(result, state.backoff_ms)
+        schedule_poll(delay_ms)
+
+        # Update circuit breaker status in ETS for non-blocking access
+        update_circuit_status_ets(
+          new_circuit_state,
+          new_consecutive_errors,
+          new_circuit_opened_at
+        )
+
+        {:noreply,
+         %State{
+           state
+           | backoff_ms: new_backoff,
+             stats: new_stats,
+             consecutive_errors: new_consecutive_errors,
+             circuit_state: new_circuit_state,
+             circuit_opened_at: new_circuit_opened_at
+         }}
+
+      {:circuit_open, state} ->
+        # Circuit is open, skip polling and schedule retry
+        Logger.warning("[RedisQ] Circuit breaker is OPEN - skipping poll")
+
+        # Update stats to track circuit open skips
+        new_stats = %{
+          state.stats
+          | circuit_open_skips: state.stats.circuit_open_skips + 1,
+            total_circuit_open_skips: state.stats.total_circuit_open_skips + 1
+        }
+
+        # Update ETS immediately for real-time dashboard metrics
+        update_ets_stats(new_stats)
+
+        # Update circuit breaker status in ETS
+        update_circuit_status_ets(
+          state.circuit_state,
+          state.consecutive_errors,
+          state.circuit_opened_at
+        )
+
+        # Schedule a retry after circuit reset timeout
+        schedule_poll(@circuit_reset_timeout_ms)
+
+        {:noreply, %State{state | stats: new_stats}}
+    end
   end
 
   @impl true
@@ -220,6 +353,19 @@ defmodule WandererKills.Ingest.RedisQ do
     }
 
     {:reply, {:ok, stats}, state}
+  end
+
+  @impl true
+  def handle_call(:get_circuit_status, _from, state) do
+    status = %{
+      circuit_state: state.circuit_state,
+      consecutive_errors: state.consecutive_errors,
+      max_consecutive_errors: @max_consecutive_errors,
+      circuit_opened_at: state.circuit_opened_at,
+      circuit_reset_timeout_ms: @circuit_reset_timeout_ms
+    }
+
+    {:reply, {:ok, status}, state}
   end
 
   @impl true
@@ -296,6 +442,22 @@ defmodule WandererKills.Ingest.RedisQ do
     end
   end
 
+  # Update circuit breaker status in ETS for non-blocking access
+  defp update_circuit_status_ets(circuit_state, consecutive_errors, circuit_opened_at) do
+    if :ets.info(EtsOwner.wanderer_kills_stats_table()) != :undefined do
+      status = %{
+        circuit_state: circuit_state,
+        consecutive_errors: consecutive_errors,
+        max_consecutive_errors: @max_consecutive_errors,
+        circuit_opened_at: circuit_opened_at,
+        circuit_reset_timeout_ms: @circuit_reset_timeout_ms,
+        last_updated: System.system_time(:millisecond)
+      }
+
+      :ets.insert(EtsOwner.wanderer_kills_stats_table(), {:redisq_circuit_status, status})
+    end
+  end
+
   # Log summary of activity over the past minute
   defp log_summary(stats) do
     duration = DateTime.diff(DateTime.utc_now(), stats.last_reset, :second)
@@ -329,7 +491,7 @@ defmodule WandererKills.Ingest.RedisQ do
     start_time = System.monotonic_time(:millisecond)
 
     Logger.debug("[RedisQ] Making HTTP request...")
-    result = HttpClient.get(url, headers)
+    result = HttpClient.get_redisq(url, headers)
     elapsed_ms = System.monotonic_time(:millisecond) - start_time
 
     Logger.debug("[RedisQ] HTTP request completed in #{elapsed_ms}ms")
@@ -515,9 +677,26 @@ defmodule WandererKills.Ingest.RedisQ do
     max_back = @max_backoff_ms
     next_back = min(old_backoff * factor, max_back)
 
-    Logger.warning("[RedisQ] Poll error: #{inspect(reason)} → retry in #{next_back}ms (backoff).")
+    Logger.warning(
+      "[RedisQ] Poll error, retrying",
+      error_type: error_type(reason),
+      backoff_ms: next_back,
+      max_backoff_ms: max_back,
+      reason: String.slice(format_error(reason), 0, 512)
+    )
 
     {next_back, next_back}
+  end
+
+  defp error_type(%Error{type: type}), do: type
+  defp error_type(_), do: :unknown
+
+  defp format_error(%Error{} = error) do
+    "#{error.domain}: #{error.type} - #{error.message}"
+  end
+
+  defp format_error(reason) do
+    inspect(reason)
   end
 
   # Build a unique queue ID: "wanderer_kills_<16_char_string>"
@@ -569,5 +748,67 @@ defmodule WandererKills.Ingest.RedisQ do
 
     # Also broadcast kill count update (increment by 1)
     SubscriptionManager.broadcast_killmail_count_update_async(system_id, 1)
+  end
+
+  # Circuit breaker implementation
+  defp check_circuit_breaker(%State{circuit_state: :open, circuit_opened_at: opened_at} = state) do
+    # Check if enough time has passed to attempt reset
+    elapsed_ms = System.monotonic_time(:millisecond) - opened_at
+
+    if elapsed_ms >= @circuit_reset_timeout_ms do
+      Logger.info(
+        "[RedisQ] Circuit breaker timeout expired - attempting to reset to half-open state"
+      )
+
+      {:ok, %State{state | circuit_state: :half_open}}
+    else
+      {:circuit_open, state}
+    end
+  end
+
+  defp check_circuit_breaker(state) do
+    {:ok, state}
+  end
+
+  # Explicitly handle half-open failure: re-open immediately
+  defp update_circuit_state({:error, _reason}, consecutive_errors, :half_open, _opened_at) do
+    Logger.error("[RedisQ] Circuit breaker re-opening after failure in half-open state")
+    {consecutive_errors + 1, :open, System.monotonic_time(:millisecond)}
+  end
+
+  defp update_circuit_state(
+         {:error, _reason},
+         consecutive_errors,
+         circuit_state,
+         circuit_opened_at
+       ) do
+    new_consecutive_errors = consecutive_errors + 1
+
+    if new_consecutive_errors >= @max_consecutive_errors do
+      case circuit_state do
+        :open ->
+          # Circuit already open, keep existing timestamp
+          {new_consecutive_errors, :open, circuit_opened_at}
+
+        _ ->
+          # Transitioning to open state, set new timestamp
+          Logger.error(
+            "[RedisQ] Circuit breaker opening after #{new_consecutive_errors} consecutive errors"
+          )
+
+          {new_consecutive_errors, :open, System.monotonic_time(:millisecond)}
+      end
+    else
+      {new_consecutive_errors, :closed, circuit_opened_at}
+    end
+  end
+
+  defp update_circuit_state({:ok, _}, _consecutive_errors, circuit_state, _circuit_opened_at) do
+    # Success - reset error counter
+    if circuit_state == :half_open do
+      Logger.info("[RedisQ] Circuit breaker reset to closed state after successful request")
+    end
+
+    {0, :closed, nil}
   end
 end

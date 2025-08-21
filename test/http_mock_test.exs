@@ -1,5 +1,5 @@
 defmodule HttpMockTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case
 
   alias WandererKills.Http.ClientMock
 

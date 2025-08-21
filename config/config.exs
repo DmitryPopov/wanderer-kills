@@ -28,6 +28,7 @@ config :wanderer_kills,
     client: WandererKills.Http.Client,
     request_timeout_ms: 10_000,
     default_timeout_ms: 10_000,
+    redisq_conn_max_idle_time_ms: 90_000,
     retry: [
       max_retries: 3,
       base_delay: 1000,
@@ -72,10 +73,19 @@ config :wanderer_kills,
     max_backoff_ms: 30_000,
     backoff_factor: 2,
     task_timeout_ms: 10_000,
+    request_timeout_ms: 45_000,
     retry: [
       max_retries: 5,
       base_delay: 500
     ]
+  ],
+
+  # Circuit breaker monitor configuration
+  circuit_breaker_monitor: [
+    # Check every minute
+    check_interval_ms: 60_000,
+    # Alert after 10 minutes
+    alert_threshold_ms: 600_000
   ],
 
   # Parser configuration

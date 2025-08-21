@@ -14,6 +14,7 @@ defmodule WandererKills.Http.Client do
   require Logger
 
   alias WandererKills.Core.Support.Error
+  alias WandererKills.Http.ConnectionMonitor
   alias WandererKills.Ingest.SmartRateLimiter
 
   # Configuration
@@ -23,6 +24,13 @@ defmodule WandererKills.Http.Client do
   # ESI specific timeouts
   @esi_timeout_ms Application.compile_env(:wanderer_kills, [:esi, :request_timeout_ms], 30_000)
   @zkb_timeout_ms Application.compile_env(:wanderer_kills, [:zkb, :request_timeout_ms], 15_000)
+
+  # RedisQ long-polling requires longer timeout
+  @redisq_timeout_ms Application.compile_env(
+                       :wanderer_kills,
+                       [:redisq, :request_timeout_ms],
+                       45_000
+                     )
 
   @type url :: String.t()
   @type headers :: [{String.t(), String.t()}]
@@ -93,11 +101,29 @@ defmodule WandererKills.Http.Client do
     get_with_rate_limit(url, headers, options)
   end
 
+  @doc """
+  GET request specifically for RedisQ long-polling endpoints.
+  Includes longer timeout and connection handling for long-polling.
+  """
+  @spec get_redisq(url, headers, options) :: response
+  def get_redisq(url, headers \\ [], options \\ []) do
+    options = Keyword.put_new(options, :timeout, @redisq_timeout_ms)
+    do_get(url, headers, options)
+  end
+
   # ============================================================================
   # Private Implementation
   # ============================================================================
 
   defp do_get(url, headers, options) do
+    do_get_with_redirects(url, headers, options, 0)
+  end
+
+  defp do_get_with_redirects(_url, _headers, _options, redirect_count) when redirect_count > 5 do
+    {:error, Error.http_error(:too_many_redirects, "Too many redirects (>5)", false)}
+  end
+
+  defp do_get_with_redirects(url, headers, options, redirect_count) do
     Logger.debug("[HTTP] GET #{url}")
 
     timeout = Keyword.get(options, :timeout, @default_timeout_ms)
@@ -113,29 +139,18 @@ defmodule WandererKills.Http.Client do
     start_time = System.monotonic_time(:millisecond)
 
     result =
-      case Finch.request(request, finch_name, receive_timeout: timeout) do
-        {:ok, %Finch.Response{status: status, body: body, headers: resp_headers}} ->
-          elapsed = System.monotonic_time(:millisecond) - start_time
-          Logger.debug("[HTTP] Response #{status} in #{elapsed}ms")
-
-          # Parse JSON if content-type indicates it
-          parsed_body = maybe_parse_json(body, resp_headers)
-
-          handle_response(status, parsed_body, resp_headers)
-
-        {:error, %{reason: :timeout}} ->
-          {:error, Error.http_error(:timeout, "Request to #{url} timed out", true)}
-
-        {:error, %{reason: :econnrefused}} ->
-          {:error, Error.http_error(:connection_failed, "Connection refused for #{url}", true)}
-
-        {:error, reason} ->
-          Logger.error("[HTTP] Request failed: #{inspect(reason)}")
-          {:error, Error.http_error(:request_failed, "Request failed: #{inspect(reason)}", false)}
-      end
+      request
+      |> Finch.request(finch_name, receive_timeout: timeout)
+      |> handle_finch_response(url, start_time, headers, options, redirect_count)
 
     # Emit telemetry
     emit_telemetry(url, start_time, result)
+
+    # Report to connection monitor
+    case result do
+      {:ok, _} -> ConnectionMonitor.report_success(url)
+      _ -> :ok
+    end
 
     result
   end
@@ -183,6 +198,12 @@ defmodule WandererKills.Http.Client do
     # Emit telemetry
     emit_telemetry(url, start_time, result)
 
+    # Report to connection monitor
+    case result do
+      {:ok, _} -> ConnectionMonitor.report_success(url)
+      _ -> :ok
+    end
+
     result
   end
 
@@ -191,17 +212,16 @@ defmodule WandererKills.Http.Client do
   # ============================================================================
 
   defp get_finch_name do
-    # Use WandererKills.Finch if available, otherwise fall back to default
-    if Process.whereis(WandererKills.Finch) do
-      WandererKills.Finch
-    else
-      # In test environment, use a test-specific Finch
-      if Application.get_env(:wanderer_kills, :env) == :test do
+    # Always use WandererKills.Finch in production/dev
+    # In test environment, use a test-specific Finch
+    case Application.get_env(:wanderer_kills, :env) do
+      :test ->
         WandererKills.Test.Finch
-      else
-        # Fallback - this shouldn't happen in normal operation
-        raise "No Finch instance available!"
-      end
+
+      _ ->
+        # In production/dev, always use WandererKills.Finch
+        # Finch should be started by the application supervisor
+        WandererKills.Finch
     end
   end
 
@@ -221,6 +241,95 @@ defmodule WandererKills.Http.Client do
 
     # Merge with provided headers (provided headers take precedence)
     Enum.uniq_by(headers ++ default_headers, fn {key, _} -> String.downcase(key) end)
+  end
+
+  defp resolve_redirect_url(original_url, location) do
+    # If the location is already an absolute URL, return it as-is
+    case URI.parse(location) do
+      %URI{scheme: scheme} when not is_nil(scheme) ->
+        # Already absolute URL
+        location
+
+      _ ->
+        # Relative URL - resolve against original URL
+        original_uri = URI.parse(original_url)
+
+        # Parse the relative location
+        location_uri = URI.parse(location)
+
+        # Merge with original URL, preserving the original host/scheme
+        merged = URI.merge(original_uri, location_uri)
+        URI.to_string(merged)
+    end
+  end
+
+  defp handle_finch_response(
+         {:ok, %Finch.Response{status: status, body: body, headers: resp_headers}},
+         url,
+         start_time,
+         headers,
+         options,
+         redirect_count
+       ) do
+    elapsed = System.monotonic_time(:millisecond) - start_time
+    Logger.debug("[HTTP] Response #{status} in #{elapsed}ms")
+
+    # Parse JSON if content-type indicates it
+    parsed_body = maybe_parse_json(body, resp_headers)
+
+    case handle_response(status, parsed_body, resp_headers) do
+      {:redirect, location} ->
+        # Resolve relative URLs against the current URL
+        resolved_location = resolve_redirect_url(url, location)
+        do_get_with_redirects(resolved_location, headers, options, redirect_count + 1)
+
+      other ->
+        other
+    end
+  end
+
+  defp handle_finch_response(
+         {:error, error},
+         url,
+         _start_time,
+         _headers,
+         _options,
+         _redirect_count
+       ) do
+    handle_request_error(error, url)
+  end
+
+  defp handle_request_error(%{reason: :timeout}, url) do
+    # Report timeout to connection monitor
+    ConnectionMonitor.report_timeout(url)
+    {:error, Error.http_error(:timeout, "Request to #{url} timed out", true)}
+  end
+
+  defp handle_request_error(%{reason: :econnrefused}, url) do
+    # Report connection failure to connection monitor
+    ConnectionMonitor.report_failure(url, :connection_refused)
+    {:error, Error.http_error(:connection_failed, "Connection refused for #{url}", true)}
+  end
+
+  defp handle_request_error(%Mint.TransportError{reason: :closed}, _url) do
+    Logger.warning("[HTTP] Connection closed - will retry")
+    {:error, Error.http_error(:connection_closed, "Connection closed", true)}
+  end
+
+  defp handle_request_error(%Mint.TransportError{} = transport_error, _url) do
+    Logger.warning("[HTTP] Transport error: #{inspect(transport_error)}")
+
+    {:error,
+     Error.http_error(
+       :transport_error,
+       "Transport error: #{inspect(transport_error)}",
+       true
+     )}
+  end
+
+  defp handle_request_error(reason, _url) do
+    Logger.error("[HTTP] Request failed: #{inspect(reason)}")
+    {:error, Error.http_error(:request_failed, "Request failed: #{inspect(reason)}", false)}
   end
 
   defp ensure_content_type(headers) do
@@ -286,6 +395,29 @@ defmodule WandererKills.Http.Client do
        status: status,
        body: body
      })}
+  end
+
+  defp handle_response(status, _body, headers) when status in [301, 302, 303, 307, 308] do
+    # Handle redirect by returning the Location header
+    location =
+      Enum.find_value(headers, fn
+        {key, value} when is_binary(key) ->
+          if String.downcase(key) == "location", do: value, else: nil
+
+        _ ->
+          nil
+      end)
+
+    if location do
+      {:redirect, location}
+    else
+      {:error,
+       Error.http_error(
+         :redirect_no_location,
+         "#{status} redirect without Location header",
+         false
+       )}
+    end
   end
 
   defp handle_response(status, body, _headers) do

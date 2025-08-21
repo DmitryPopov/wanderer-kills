@@ -16,6 +16,12 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
 
     # Ensure clean state
     Telemetry.reset_metrics_with_tasks()
+
+    on_exit(fn ->
+      # Reset metrics after each test to prevent state leakage
+      Telemetry.reset_metrics_with_tasks()
+    end)
+
     :ok
   end
 

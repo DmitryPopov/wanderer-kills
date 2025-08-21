@@ -210,9 +210,15 @@ defmodule WandererKills.Subs.Preloader do
   end
 
   defp killmail_recent?(killmail, cutoff_time) do
-    case DateTime.from_iso8601(killmail["kill_time"]) do
-      {:ok, kill_time, _} -> DateTime.compare(kill_time, cutoff_time) == :gt
-      _ -> false
+    kill_time_str = killmail["kill_time"]
+
+    if kill_time_str do
+      case DateTime.from_iso8601(kill_time_str) do
+        {:ok, kill_time, _} -> DateTime.compare(kill_time, cutoff_time) == :gt
+        _ -> false
+      end
+    else
+      false
     end
   end
 end
