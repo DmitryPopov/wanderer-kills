@@ -5,6 +5,9 @@
 ###############################################################################
 FROM elixir:1.18.3-otp-27-slim AS deps
 
+# Get target architecture for cache isolation
+ARG TARGETARCH
+
 WORKDIR /app
 
 # Set Mix environment
@@ -28,11 +31,11 @@ RUN --mount=type=cache,target=/root/.hex \
 # Copy dependency files first
 COPY mix.exs mix.lock ./
 
-# Fetch and compile dependencies with cache mounts
-RUN --mount=type=cache,target=/root/.hex \
-    --mount=type=cache,target=/root/.mix \
-    --mount=type=cache,target=/root/.cache \
-    --mount=type=cache,target=/app/_build,sharing=locked \
+# Fetch and compile dependencies with architecture-specific cache mounts
+RUN --mount=type=cache,id=hex-${TARGETARCH},target=/root/.hex \
+    --mount=type=cache,id=mix-${TARGETARCH},target=/root/.mix \
+    --mount=type=cache,id=cache-${TARGETARCH},target=/root/.cache \
+    --mount=type=cache,id=build-deps-${TARGETARCH},target=/app/_build,sharing=locked \
     mix deps.get --only prod \
  && mix deps.compile
 
@@ -40,6 +43,9 @@ RUN --mount=type=cache,target=/root/.hex \
 # 2. Build Stage with build cache
 ###############################################################################
 FROM deps AS build
+
+# Get target architecture for cache isolation
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -51,10 +57,10 @@ COPY priv priv/
 # Install Hex and Rebar in build stage as well
 RUN mix local.hex --force && mix local.rebar --force
 
-# Compile and release with cache mount for build artifacts
-RUN --mount=type=cache,target=/app/_build,sharing=locked \
-    --mount=type=cache,target=/root/.hex \
-    --mount=type=cache,target=/root/.mix \
+# Compile and release with architecture-specific cache mount for build artifacts
+RUN --mount=type=cache,id=build-${TARGETARCH},target=/app/_build,sharing=locked \
+    --mount=type=cache,id=hex-${TARGETARCH},target=/root/.hex \
+    --mount=type=cache,id=mix-${TARGETARCH},target=/root/.mix \
     mix deps.get --only prod \
  && mix compile --warnings-as-errors \
  && mix release --overwrite \
