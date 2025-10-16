@@ -4,7 +4,7 @@ defmodule WandererKills.MixProject do
   def project do
     [
       app: :wanderer_kills,
-      version: "1.0.3",
+      version: "1.5.6",
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       compilers: Mix.compilers() ++ [:boundary],
@@ -34,6 +34,12 @@ defmodule WandererKills.MixProject do
             apps: [:wanderer_kills, :wanderer_kills_web]
           ]
         ]
+      ],
+
+      # Dialyzer configuration
+      dialyzer: [
+        ignore_warnings: ".dialyzer_ignore.exs",
+        plt_add_apps: [:ex_unit, :mix]
       ]
     ]
   end
@@ -70,7 +76,7 @@ defmodule WandererKills.MixProject do
       {:backoff, "~> 1.1"},
 
       # CSV parsing
-      {:nimble_csv, "~> 1.2"},
+      {:nimble_csv, "~> 1.3"},
 
       # Parallel processing
       {:flow, "~> 1.2"},
@@ -80,6 +86,12 @@ defmodule WandererKills.MixProject do
 
       # Phoenix PubSub for real-time killmail distribution
       {:phoenix_pubsub, "~> 2.1"},
+
+      # Server-Sent Events with PubSub integration
+      {:sse_phoenix_pubsub, "~> 1.0"},
+
+      # OpenAPI specification
+      {:open_api_spex, "~> 3.18"},
 
       # Development and test tools
       {:credo, "~> 1.7.6", only: [:dev, :test], runtime: false},

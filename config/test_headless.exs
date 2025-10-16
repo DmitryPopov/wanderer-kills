@@ -26,7 +26,7 @@ config :wanderer_kills,
 
   # HTTP retry configuration
   http: [
-    client: WandererKills.Ingest.Http.Client.Mock,
+    client: WandererKills.Http.ClientMock,
     request_timeout_ms: 1_000,
     default_timeout_ms: 1_000,
     retry: [

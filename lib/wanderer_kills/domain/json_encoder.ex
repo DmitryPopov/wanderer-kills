@@ -30,6 +30,7 @@ defmodule WandererKills.Domain.JsonEncoder do
         "victim" => killmail.victim,
         "attackers" => killmail.attackers
       }
+      |> JsonEncoder.maybe_add_field("solar_system_name", killmail.solar_system_name)
       |> JsonEncoder.maybe_add_field("moon_id", killmail.moon_id)
       |> JsonEncoder.maybe_add_field("war_id", killmail.war_id)
       |> JsonEncoder.maybe_add_field("zkb", killmail.zkb)

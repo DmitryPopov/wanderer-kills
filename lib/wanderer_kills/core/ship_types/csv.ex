@@ -23,9 +23,9 @@ defmodule WandererKills.Core.ShipTypes.CSV do
 
   require Logger
 
-  alias WandererKills.Core.ShipTypes.{Cache, Parser, Validator}
+  alias WandererKills.Core.ShipTypes.{Cache, DataProcessor}
   alias WandererKills.Core.Support.Error
-  alias WandererKills.Ingest.Http.Client, as: HttpClient
+  alias WandererKills.Http.Client, as: HttpClient
 
   @required_files ["invTypes.csv", "invGroups.csv"]
 
@@ -279,34 +279,38 @@ defmodule WandererKills.Core.ShipTypes.CSV do
          {:ok, types} <- parse_types_file(types_path),
          {:ok, ship_types_map} <- build_ship_types_map(types, groups) do
       {:ok, ship_types_map}
+    else
+      {:error, _} = error -> error
     end
   end
 
   @spec parse_groups_file(String.t()) :: {:ok, map()} | {:error, Error.t()}
   defp parse_groups_file(groups_path) do
-    with {:ok, {groups_data, _parse_stats}} <-
-           Parser.read_file(groups_path, &Parser.parse_group_row/1),
-         {:ok, valid_groups, _stats} <-
-           Validator.validate_batch(groups_data, &Validator.valid_ship_group?/1) do
-      {:ok, build_groups_map(valid_groups)}
+    with {:ok, groups} <- DataProcessor.process_ship_groups(groups_path) do
+      {:ok, build_groups_map(groups)}
     end
   end
 
   @spec parse_types_file(String.t()) :: {:ok, list()} | {:error, Error.t()}
   defp parse_types_file(types_path) do
-    with {:ok, {types_data, _parse_stats}} <-
-           Parser.read_file(types_path, &Parser.parse_type_row/1) do
-      valid_types = Enum.filter(types_data, &Validator.valid_ship_type?/1)
-      {:ok, valid_types}
+    case DataProcessor.process_ship_types(types_path) do
+      {:ok, %{ship_types: types_map, stats: _stats}} ->
+        # Convert map values to list
+        {:ok, Map.values(types_map)}
+
+      error ->
+        error
     end
   end
 
-  @spec build_groups_map(list()) :: map()
-  defp build_groups_map(groups) do
-    groups
-    |> Enum.reduce(%{}, fn group, acc ->
-      if group.group_id in Validator.ship_group_ids() do
-        Map.put(acc, group.group_id, group.name)
+  @spec build_groups_map(map()) :: map()
+  defp build_groups_map(groups_map) when is_map(groups_map) do
+    valid_group_ids = DataProcessor.get_valid_ship_group_ids()
+
+    groups_map
+    |> Enum.reduce(%{}, fn {group_id, group}, acc ->
+      if group_id in valid_group_ids do
+        Map.put(acc, group_id, group.name)
       else
         acc
       end
@@ -315,9 +319,11 @@ defmodule WandererKills.Core.ShipTypes.CSV do
 
   @spec build_ship_types_map(list(), map()) :: {:ok, map()}
   defp build_ship_types_map(types, groups_map) do
+    valid_group_ids = DataProcessor.get_valid_ship_group_ids()
+
     ship_types_map =
       types
-      |> Enum.filter(&Validator.ship_type_in_valid_group?/1)
+      |> Enum.filter(fn type -> type.group_id in valid_group_ids end)
       |> Enum.reduce(%{}, fn type, acc ->
         # Add group name from groups map
         enhanced_type = Map.put(type, :group_name, Map.get(groups_map, type.group_id, "Unknown"))

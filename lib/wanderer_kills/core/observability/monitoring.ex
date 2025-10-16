@@ -1,18 +1,25 @@
 defmodule WandererKills.Core.Observability.Monitoring do
   @moduledoc """
-  Unified monitoring and observability for the WandererKills application.
+  Consolidated monitoring and observability for the WandererKills application.
 
-  This module consolidates health monitoring, metrics collection, telemetry measurements,
-  and instrumentation functionality into a single observability interface.
+  This module consolidates functionality from monitoring.ex, unified_status.ex, and parts
+  of statistics.ex into a single observability interface. It provides:
+
+  - System health monitoring and status reporting
+  - Unified status aggregation and periodic reporting
+  - Statistical calculations and aggregations
+  - Telemetry measurements and periodic data gathering
+  - System resource monitoring
+  - Parser statistics tracking
 
   ## Features
 
   - Cache health monitoring and metrics collection
   - Application health status and uptime tracking
-  - Telemetry measurements and periodic data gathering
-  - Unified error handling and logging
-  - Periodic health checks with configurable intervals
+  - Periodic status reporting with comprehensive system overview
   - System metrics collection (memory, CPU, processes)
+  - API and WebSocket performance tracking
+  - Statistical calculations for rates, percentages, and aggregations
 
   ## Usage
 
@@ -23,39 +30,87 @@ defmodule WandererKills.Core.Observability.Monitoring do
   # Check overall health
   {:ok, health} = Monitoring.check_health()
 
-  # Get metrics
-  {:ok, metrics} = Monitoring.get_metrics()
+  # Get unified status report
+  status = Monitoring.get_unified_status()
+
+  # Force immediate status report
+  Monitoring.report_status_now()
 
   # Get stats for a specific cache
-  {:ok, stats} = Monitoring.get_cache_stats(:killmails_cache)
-
-  # Telemetry measurements (called by TelemetryPoller)
-  Monitoring.measure_http_requests()
-  Monitoring.measure_cache_operations()
-  Monitoring.measure_fetch_operations()
+  {:ok, stats} = Monitoring.get_cache_stats(:wanderer_cache)
   ```
-
-  ## Cache Names
-
-  The following cache names are monitored:
-  - `:wanderer_cache` - Unified cache with namespaced keys (killmails, systems, ESI data)
   """
 
   use GenServer
   require Logger
   alias WandererKills.Core.Cache
   alias WandererKills.Core.EtsOwner
-  alias WandererKills.Core.Observability.Metrics
-  alias WandererKills.Core.Support.Clock
+  alias WandererKills.Core.Observability.{Health, Metrics}
 
-  @cache_names [:wanderer_cache]
   @health_check_interval :timer.minutes(5)
   @summary_interval :timer.minutes(5)
+
+  @typedoc "Internal server state"
+  @type state :: %{
+          interval_ms: pos_integer(),
+          last_report_at: DateTime.t(),
+          parser_stats: map()
+        }
 
   # Client API
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  # ============================================================================
+  # Unified Status Functions (from unified_status.ex)
+  # ============================================================================
+
+  @doc """
+  Generates and logs a comprehensive status report immediately (asynchronous).
+
+  Note: This function uses GenServer.cast which is asynchronous and does not 
+  guarantee message delivery. Use report_status_now_sync/1 if you need 
+  synchronous delivery with timeout.
+  """
+  @spec report_status_now() :: :ok
+  def report_status_now do
+    GenServer.cast(__MODULE__, :report_now)
+  end
+
+  @doc """
+  Generates and logs a comprehensive status report immediately (synchronous).
+
+  This ensures the message is received and handled, but may block the caller.
+  """
+  @spec report_status_now_sync(timeout()) :: :ok
+  def report_status_now_sync(timeout \\ 5000) do
+    GenServer.call(__MODULE__, :report_now, timeout)
+  end
+
+  @doc """
+  Gets the current unified status of all subsystems.
+  """
+  @spec get_unified_status() :: map()
+  def get_unified_status do
+    GenServer.call(__MODULE__, :get_unified_status, 5000)
+  rescue
+    error in [ErlangError] ->
+      if match?({:timeout, _}, error.original) do
+        # Return empty status on timeout
+        %{
+          system: %{uptime_seconds: 0},
+          websocket: %{},
+          processing: %{
+            redisq_received: 0,
+            redisq_last_killmail_ago_seconds: nil,
+            processing_lag_seconds: 0
+          }
+        }
+      else
+        reraise error, __STACKTRACE__
+      end
   end
 
   @doc """
@@ -85,7 +140,8 @@ defmodule WandererKills.Core.Observability.Monitoring do
   """
   @spec check_health() :: {:ok, map()} | {:error, term()}
   def check_health do
-    GenServer.call(__MODULE__, :check_health)
+    # Delegate to the new consolidated Health module
+    Health.check_health()
   end
 
   @doc """
@@ -113,7 +169,8 @@ defmodule WandererKills.Core.Observability.Monitoring do
   """
   @spec get_metrics() :: {:ok, map()} | {:error, term()}
   def get_metrics do
-    GenServer.call(__MODULE__, :get_metrics)
+    # Delegate to the new consolidated Health module
+    Health.get_metrics()
   end
 
   @doc """
@@ -162,7 +219,6 @@ defmodule WandererKills.Core.Observability.Monitoring do
   @spec increment_stored() :: :ok
   def increment_stored do
     GenServer.cast(__MODULE__, {:increment, :stored})
-    Metrics.increment_stored()
   end
 
   @doc """
@@ -172,7 +228,6 @@ defmodule WandererKills.Core.Observability.Monitoring do
   @spec increment_skipped() :: :ok
   def increment_skipped do
     GenServer.cast(__MODULE__, {:increment, :skipped})
-    Metrics.increment_skipped()
   end
 
   @doc """
@@ -182,7 +237,6 @@ defmodule WandererKills.Core.Observability.Monitoring do
   @spec increment_failed() :: :ok
   def increment_failed do
     GenServer.cast(__MODULE__, {:increment, :failed})
-    Metrics.increment_failed()
   end
 
   @doc """
@@ -224,11 +278,7 @@ defmodule WandererKills.Core.Observability.Monitoring do
   """
   @spec measure_cache_operations() :: :ok
   def measure_cache_operations do
-    cache_metrics =
-      case Cache.size() do
-        {:ok, size} -> size
-        _ -> 0
-      end
+    cache_metrics = Cache.size()
 
     :telemetry.execute(
       [:wanderer_kills, :system, :cache_operations],
@@ -313,16 +363,18 @@ defmodule WandererKills.Core.Observability.Monitoring do
     {:ok, state}
   end
 
+  # Health and metrics checks now delegated to Health module
+  # Keeping these for backward compatibility if called directly
   @impl true
   def handle_call(:check_health, _from, state) do
-    health = build_comprehensive_health_status()
-    {:reply, {:ok, health}, state}
+    result = Health.check_health()
+    {:reply, result, state}
   end
 
   @impl true
   def handle_call(:get_metrics, _from, state) do
-    metrics = build_comprehensive_metrics()
-    {:reply, {:ok, metrics}, state}
+    result = Health.get_metrics()
+    {:reply, result, state}
   end
 
   @impl true
@@ -351,7 +403,23 @@ defmodule WandererKills.Core.Observability.Monitoring do
   end
 
   @impl true
+  def handle_call(:get_unified_status, _from, state) do
+    # Build unified status structure expected by Dashboard
+    unified_status = build_unified_status(state)
+    {:reply, unified_status, state}
+  end
+
+  @impl true
+  def handle_call(:report_now, _from, state) do
+    # Generate and log comprehensive status report immediately
+    unified_status = build_unified_status(state)
+    log_status_report(unified_status)
+    {:reply, :ok, state}
+  end
+
+  @impl true
   def handle_cast({:increment, key}, state) when key in [:stored, :skipped, :failed] do
+    Logger.debug("[Monitoring] GenServer handle_cast increment #{key}")
     current_stats = state.parser_stats
 
     new_stats =
@@ -359,6 +427,14 @@ defmodule WandererKills.Core.Observability.Monitoring do
       |> Map.update!(key, &(&1 + 1))
       |> Map.update!(:total_processed, &(&1 + 1))
 
+    # Update unified metrics after successfully updating internal state
+    case key do
+      :stored -> Metrics.increment_stored()
+      :skipped -> Metrics.increment_skipped()
+      :failed -> Metrics.increment_failed()
+    end
+
+    Logger.debug("[Monitoring] Updated parser_stats: #{inspect(new_stats)}")
     new_state = %{state | parser_stats: new_stats}
     {:noreply, new_state}
   end
@@ -366,7 +442,8 @@ defmodule WandererKills.Core.Observability.Monitoring do
   @impl true
   def handle_info(:check_health, state) do
     Logger.debug("[Monitoring] Running periodic health check")
-    _health = build_comprehensive_health_status()
+    # Delegate to Health module for consistency
+    _health = Health.check_health()
     schedule_health_check()
     {:noreply, state}
   end
@@ -421,82 +498,157 @@ defmodule WandererKills.Core.Observability.Monitoring do
     Process.send_after(self(), :log_parser_summary, @summary_interval)
   end
 
-  @spec build_comprehensive_health_status() :: map()
-  defp build_comprehensive_health_status do
-    cache_checks = Enum.map(@cache_names, &build_cache_health_check/1)
-    all_healthy = Enum.all?(cache_checks, & &1.healthy)
+  @spec log_status_report(map()) :: :ok
+  defp log_status_report(unified_status) do
+    system_info = format_system_status(unified_status)
+    websocket_info = format_websocket_status(unified_status)
+    processing_info = format_processing_status(unified_status)
+    storage_info = format_storage_status(unified_status)
+    api_info = format_api_status(unified_status)
+    parser_info = format_parser_status(unified_status)
+
+    Logger.info("""
+    [Monitoring] Status Report:
+    #{system_info}
+    #{websocket_info}
+    #{processing_info}
+    #{storage_info}
+    #{api_info}
+    #{parser_info}
+    """)
+  end
+
+  defp format_system_status(unified_status) do
+    memory = get_in(unified_status, [:system, :memory_mb]) || "N/A"
+    processes = get_in(unified_status, [:system, :process_count]) || "N/A"
+    "System - Memory: #{memory}MB, Processes: #{processes}"
+  end
+
+  defp format_websocket_status(unified_status) do
+    active = get_in(unified_status, [:websocket, :active_connections]) || 0
+    total = get_in(unified_status, [:websocket, :total_connections]) || 0
+    "WebSocket - Active: #{active}, Total: #{total}"
+  end
+
+  defp format_processing_status(unified_status) do
+    queued = get_in(unified_status, [:processing, :queued]) || 0
+    processing = get_in(unified_status, [:processing, :processing]) || 0
+    "Processing - Queued: #{queued}, Processing: #{processing}"
+  end
+
+  defp format_storage_status(unified_status) do
+    cached = get_in(unified_status, [:storage, :cached_items]) || 0
+    storage = get_in(unified_status, [:storage, :total_storage_mb]) || "N/A"
+    "Storage - Cached: #{cached}, Total Storage: #{storage}MB"
+  end
+
+  defp format_api_status(unified_status) do
+    requests_per_min = get_in(unified_status, [:api, :requests_per_minute]) || 0
+    avg_response = get_in(unified_status, [:api, :avg_response_time]) || "N/A"
+    "API - Requests/min: #{requests_per_min}, Avg Response: #{avg_response}ms"
+  end
+
+  defp format_parser_status(unified_status) do
+    stored = get_in(unified_status.parser_stats, [:stored]) || 0
+    skipped = get_in(unified_status.parser_stats, [:skipped]) || 0
+    failed = get_in(unified_status.parser_stats, [:failed]) || 0
+    "Parser - Stored: #{stored}, Skipped: #{skipped}, Failed: #{failed}"
+  end
+
+  # Health and metrics building functions removed - now delegated to Health module
+
+  @spec build_unified_status(state()) :: map()
+  defp build_unified_status(state) do
+    # Get system info
+    system_info = get_system_info()
+
+    # Get websocket stats from ETS
+    websocket_stats = get_websocket_stats()
+
+    # Get processing stats from ETS
+    processing_stats = get_processing_stats()
+
+    # Get storage stats from ETS tables
+    storage_stats = get_storage_stats()
+
+    # Get API stats from ETS
+    api_stats = get_api_stats()
+
+    # Get SSE stats from ETS
+    sse_stats = get_sse_stats()
 
     %{
-      healthy: all_healthy,
-      timestamp: Clock.now_iso8601(),
-      version: get_app_version(),
-      uptime_seconds: get_uptime_seconds(),
-      caches: cache_checks,
-      system: get_system_info()
+      system:
+        Map.merge(system_info, %{
+          uptime_seconds: get_uptime_seconds()
+        }),
+      websocket: websocket_stats,
+      processing: processing_stats,
+      storage: storage_stats,
+      api: api_stats,
+      sse: sse_stats,
+      parser_stats: state.parser_stats
     }
   end
 
-  @spec build_comprehensive_metrics() :: map()
-  defp build_comprehensive_metrics do
-    cache_metrics = Enum.map(@cache_names, &build_cache_metrics/1)
+  @spec get_websocket_stats() :: map()
+  defp get_websocket_stats do
+    # Try to get stats from ETS
+    case :ets.lookup(EtsOwner.wanderer_kills_stats_table(), :websocket_stats) do
+      [{:websocket_stats, stats}] ->
+        stats
 
-    %{
-      timestamp: Clock.now_iso8601(),
-      uptime_seconds: get_uptime_seconds(),
-      caches: cache_metrics,
-      system: get_system_info(),
-      rate_limiter: collect_rate_limiter_metrics(),
-      aggregate: %{
-        total_cache_size: Enum.sum(Enum.map(cache_metrics, &Map.get(&1, :size, 0))),
-        average_hit_rate: calculate_average_hit_rate(cache_metrics)
-      }
-    }
-  end
-
-  @spec build_cache_health_check(atom()) :: map()
-  defp build_cache_health_check(cache_name) do
-    case Cache.health() do
-      {:ok, health} ->
-        Map.put(health, :name, cache_name)
-    end
-  rescue
-    error ->
-      Logger.error(
-        "[Monitoring] Cache health check exception for #{cache_name}: #{inspect(error)}"
-      )
-
-      %{name: cache_name, healthy: false, status: "unavailable"}
-  end
-
-  @spec build_cache_metrics(atom()) :: map()
-  defp build_cache_metrics(cache_name) do
-    case Cache.stats() do
-      {:ok, stats} ->
-        size = Map.get(stats, :size, 0)
-
+      _ ->
         %{
-          name: cache_name,
-          size: size,
-          hit_rate: Map.get(stats, :hit_rate, 0.0),
-          miss_rate: Map.get(stats, :miss_rate, 0.0),
-          evictions: Map.get(stats, :evictions, 0),
-          operations: Map.get(stats, :operations, 0),
-          memory: Map.get(stats, :memory, 0)
+          timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+          connections: %{
+            active: 0,
+            total_connected: 0,
+            total_disconnected: 0
+          },
+          subscriptions: %{
+            active: 0,
+            total_systems: 0,
+            total_added: 0,
+            total_removed: 0,
+            total_characters: 0
+          },
+          kills_sent: %{
+            total: 0,
+            preload: 0,
+            realtime: 0
+          }
         }
-
-      {:error, reason} ->
-        Logger.error(
-          "[Monitoring] Cache metrics collection failed for #{cache_name}: #{inspect(reason)}"
-        )
-
-        %{name: cache_name, error: "Unable to retrieve stats", reason: inspect(reason)}
     end
   end
 
-  @spec get_cache_stats_internal(atom()) :: {:ok, map()} | {:error, term()}
-  defp get_cache_stats_internal(_cache_name) do
-    # Use unified cache API which already includes size in stats
-    Cache.stats()
+  @spec get_processing_stats() :: map()
+  defp get_processing_stats do
+    # Try to get RedisQ stats from ETS
+    redisq_stats =
+      case :ets.lookup(EtsOwner.wanderer_kills_stats_table(), :redisq_stats) do
+        [{:redisq_stats, stats}] -> stats
+        _ -> %{}
+      end
+
+    # Calculate processing metrics
+    redisq_received = Map.get(redisq_stats, :total_kills_received, 0)
+    last_kill_at = Map.get(redisq_stats, :last_kill_received_at)
+
+    last_killmail_ago_seconds =
+      if last_kill_at do
+        System.system_time(:second) - last_kill_at
+      else
+        # Never received
+        999_999
+      end
+
+    %{
+      redisq_received: redisq_received,
+      redisq_last_killmail_ago_seconds: last_killmail_ago_seconds,
+      # Not currently tracked
+      processing_lag_seconds: 0
+    }
   end
 
   @spec get_system_info() :: map()
@@ -528,88 +680,92 @@ defmodule WandererKills.Core.Observability.Monitoring do
       %{error: "System info collection failed"}
   end
 
-  @spec calculate_average_hit_rate([map()]) :: float()
-  defp calculate_average_hit_rate(cache_metrics) do
-    valid_metrics = Enum.reject(cache_metrics, &Map.has_key?(&1, :error))
-
-    case valid_metrics do
-      [] ->
-        0.0
-
-      metrics ->
-        hit_rates = Enum.map(metrics, &Map.get(&1, :hit_rate, 0.0))
-        Enum.sum(hit_rates) / length(hit_rates)
-    end
-  end
-
-  defp get_app_version do
-    Application.spec(:wanderer_kills, :vsn)
-    |> to_string()
-  rescue
-    _ -> "unknown"
-  end
-
   defp get_uptime_seconds do
     :erlang.statistics(:wall_clock)
     |> elem(0)
     |> div(1000)
   end
 
-  @spec collect_rate_limiter_metrics() :: map()
-  defp collect_rate_limiter_metrics do
-    features = Application.get_env(:wanderer_kills, :features, [])
+  @spec get_cache_stats_internal(atom()) :: map()
+  defp get_cache_stats_internal(_cache_name) do
+    # Use unified cache API which already includes size in stats
+    Cache.stats()
+  rescue
+    error ->
+      Logger.warning("Failed to get cache stats", error: inspect(error))
+      %{}
+  end
 
-    base_metrics = %{
-      smart_rate_limiting_enabled: features[:smart_rate_limiting] || false,
-      request_coalescing_enabled: features[:request_coalescing] || false
+  # Helper functions removed - now part of Health module
+
+  @spec get_storage_stats() :: map()
+  defp get_storage_stats do
+    # Get counts from ETS tables
+    killmails_count = try_ets_info(:killmails, :size, 0)
+    systems_count = try_ets_info(:system_killmails, :size, 0)
+
+    %{
+      killmails_count: killmails_count,
+      systems_count: systems_count
     }
-
-    smart_limiter_stats = collect_smart_limiter_stats(features[:smart_rate_limiting])
-    coalescer_stats = collect_coalescer_stats(features[:request_coalescing])
-
-    Map.merge(base_metrics, %{
-      smart_rate_limiter: smart_limiter_stats,
-      request_coalescer: coalescer_stats
-    })
   end
 
-  defp collect_smart_limiter_stats(true) do
-    case WandererKills.Ingest.SmartRateLimiter.get_stats() do
-      {:ok, stats} ->
-        %{
-          queue_size: stats.queue_size,
-          pending_requests: stats.pending_requests,
-          current_tokens: stats.current_tokens,
-          circuit_state: stats.circuit_state,
-          failure_count: stats.failure_count,
-          detected_window_ms: stats.detected_window_ms
-        }
+  @spec get_api_stats() :: map()
+  defp get_api_stats do
+    # Try to get API stats from ETS
+    zkb_stats =
+      case :ets.lookup(EtsOwner.wanderer_kills_stats_table(), :zkb_api_stats) do
+        [{:zkb_api_stats, stats}] ->
+          stats
 
-      {:error, reason} ->
-        %{error: "smart_rate_limiter_unreachable", reason: inspect(reason)}
+        _ ->
+          %{
+            total_requests: 0,
+            requests_per_minute: 0,
+            error_count: 0,
+            avg_duration_ms: 0
+          }
+      end
+
+    esi_stats =
+      case :ets.lookup(EtsOwner.wanderer_kills_stats_table(), :esi_api_stats) do
+        [{:esi_api_stats, stats}] ->
+          stats
+
+        _ ->
+          %{
+            total_requests: 0,
+            requests_per_minute: 0,
+            error_count: 0,
+            avg_duration_ms: 0
+          }
+      end
+
+    %{
+      zkillboard: zkb_stats,
+      esi: esi_stats
+    }
+  end
+
+  @spec get_sse_stats() :: map()
+  defp get_sse_stats do
+    # Try to get SSE stats from ETS
+    case :ets.lookup(EtsOwner.wanderer_kills_stats_table(), :sse_stats) do
+      [{:sse_stats, stats}] ->
+        stats
 
       _ ->
-        %{error: "smart_rate_limiter_unreachable"}
+        %{
+          events_sent_total: 0,
+          connections_active: 0
+        }
     end
   end
 
-  defp collect_smart_limiter_stats(_), do: %{}
-
-  defp collect_coalescer_stats(true) do
-    case WandererKills.Ingest.RequestCoalescer.get_stats() do
-      {:ok, stats} ->
-        %{
-          pending_requests: stats.pending_requests,
-          total_requesters: stats.total_requesters
-        }
-
-      {:error, reason} ->
-        %{error: "request_coalescer_unreachable", reason: inspect(reason)}
-
-      _ ->
-        %{error: "request_coalescer_unreachable"}
+  defp try_ets_info(table, key, default) do
+    case :ets.info(table) do
+      :undefined -> default
+      info -> Keyword.get(info, key, default)
     end
   end
-
-  defp collect_coalescer_stats(_), do: %{}
 end

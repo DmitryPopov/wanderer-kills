@@ -7,10 +7,10 @@ defmodule WandererKills.EsiCacheTest do
     WandererKills.TestHelpers.clear_all_caches()
 
     # Set the http_client for this test
-    Application.put_env(:wanderer_kills, :http_client, WandererKills.Ingest.Http.Client.Mock)
+    Application.put_env(:wanderer_kills, :http, client: WandererKills.Http.ClientMock)
 
     on_exit(fn ->
-      Application.put_env(:wanderer_kills, :http_client, WandererKills.MockHttpClient)
+      Application.delete_env(:wanderer_kills, :http)
       WandererKills.TestHelpers.clear_all_caches()
     end)
   end

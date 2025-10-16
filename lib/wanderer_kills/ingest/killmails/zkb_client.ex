@@ -28,6 +28,17 @@ defmodule WandererKills.Ingest.Killmails.ZkbClientBehaviour do
   """
   @callback fetch_system_killmails_paginated(integer(), keyword(), (list() -> any())) ::
               {:ok, non_neg_integer()} | {:error, term()}
+
+  @doc """
+  Fetches historical killmail IDs for a specific date from zKillboard.
+  Date should be in YYYYMMDD format.
+  """
+  @callback fetch_history(String.t()) :: {:ok, map()} | {:error, term()}
+
+  @doc """
+  Gets killmails for a character from zKillboard.
+  """
+  @callback get_character_killmails(integer()) :: {:ok, [map()]} | {:error, term()}
 end
 
 defmodule WandererKills.Ingest.Killmails.ZkbClient do
@@ -46,9 +57,7 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
   alias WandererKills.Core.Cache
   alias WandererKills.Core.Observability.Telemetry
   alias WandererKills.Core.Support.Error
-  alias WandererKills.Ingest.Http.Client
-  alias WandererKills.Ingest.Http.Param
-  alias WandererKills.Ingest.RateLimiter
+  alias WandererKills.Http.Client
 
   # Compile-time configuration
   @zkb_timeout_ms Application.compile_env(:wanderer_kills, [:zkb, :request_timeout_ms], 15_000)
@@ -79,25 +88,21 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
     url = "#{base_url()}/killID/#{killmail_id}/"
 
     request_opts =
-      Client.build_request_opts(
-        params: [no_items: true],
-        headers: Client.eve_api_headers(),
-        timeout: @zkb_timeout_ms
-      )
+      [params: [no_items: true]]
 
     request_opts = Keyword.put(request_opts, :operation, :fetch_killmail)
 
-    # Check rate limit before making request
-    with :ok <- RateLimiter.check_rate_limit(:zkillboard),
-         {:ok, response} <- Client.request_with_telemetry(url, :zkb, request_opts),
-         {:ok, parsed} <- Client.parse_json_response(response) do
-      handle_killmail_response(parsed, killmail_id)
-    else
+    # Make request using injected HTTP client
+    case http_client().get_zkb(url, [], request_opts) do
+      {:ok, response} ->
+        parsed = response.body
+        handle_killmail_response(parsed, killmail_id)
+
       {:error, %Error{} = error} ->
         handle_killmail_error(error, killmail_id)
 
       {:error, reason} ->
-        handle_killmail_error(reason, killmail_id)
+        {:error, reason}
     end
   end
 
@@ -187,31 +192,43 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
     )
 
     # Build query parameters from options using consolidated helper
+    # Process and validate parameters
+    params_with_defaults = opts ++ [no_items: true]
+
     query_params =
-      Param.process_params(opts ++ [no_items: true],
-        key_transform: :snake_to_camel,
-        validator: &zkb_param_validator/2
-      )
+      params_with_defaults
+      |> Enum.filter(fn {key, value} -> zkb_param_validator(key, value) end)
+      |> Enum.map(fn {key, value} ->
+        # Transform snake_case to camelCase for zkillboard API
+        camel_key =
+          key
+          |> Atom.to_string()
+          |> String.split("_")
+          |> Enum.with_index()
+          |> Enum.map(fn
+            {part, 0} -> part
+            {part, _} -> String.capitalize(part)
+          end)
+          |> Enum.join()
+
+        {camel_key, value}
+      end)
 
     request_opts =
-      Client.build_request_opts(
-        params: query_params,
-        headers: Client.eve_api_headers(),
-        timeout: 60_000
-      )
+      [params: query_params, timeout: 60_000]
       |> Keyword.put(:operation, :fetch_system_killmails)
 
-    # Check rate limit and make request
-    with :ok <- RateLimiter.check_rate_limit(:zkillboard),
-         {:ok, response} <- Client.request_with_telemetry(url, :zkb, request_opts),
-         {:ok, parsed} <- Client.parse_json_response(response) do
-      handle_system_killmails_response(parsed, system_id)
-    else
+    # Make request using injected HTTP client
+    case http_client().get_zkb(url, [], request_opts) do
+      {:ok, response} ->
+        parsed = response.body
+        handle_system_killmails_response(parsed, system_id)
+
       {:error, %Error{} = error} ->
         handle_system_killmails_error(error, system_id)
 
       {:error, reason} ->
-        handle_system_killmails_error(reason, system_id)
+        {:error, reason}
     end
   end
 
@@ -300,43 +317,55 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
   # Shared function for fetching killmails by entity type
   defp fetch_entity_killmails(entity_type, entity_id) do
     url = "#{base_url()}/#{entity_type}/#{entity_id}/"
+    operation_atom = get_operation_atom(entity_type)
+    request_opts = build_entity_request_opts(operation_atom)
 
-    request_opts =
-      Client.build_request_opts(
-        params: [no_items: true],
-        headers: Client.eve_api_headers(),
-        timeout: @zkb_timeout_ms
-      )
+    http_client().get_zkb(url, [], request_opts)
+    |> handle_entity_response(entity_type, entity_id, operation_atom)
+  end
 
-    operation_atom =
-      case entity_type do
-        "systemID" -> :fetch_system_killmails
-        "characterID" -> :fetch_character_killmails
-        "corporationID" -> :fetch_corporation_killmails
-        "allianceID" -> :fetch_alliance_killmails
-        _ -> :fetch_unknown_killmails
-      end
+  # Extract operation atom mapping to reduce complexity
+  defp get_operation_atom(entity_type) do
+    case entity_type do
+      "systemID" -> :fetch_system_killmails
+      "characterID" -> :fetch_character_killmails
+      "corporationID" -> :fetch_corporation_killmails
+      "allianceID" -> :fetch_alliance_killmails
+      _ -> :fetch_unknown_killmails
+    end
+  end
 
-    request_opts = Keyword.put(request_opts, :operation, operation_atom)
+  # Build request options for entity requests
+  defp build_entity_request_opts(operation_atom) do
+    [params: [no_items: true], operation: operation_atom]
+  end
 
-    # Check rate limit and make request
-    with :ok <- RateLimiter.check_rate_limit(:zkillboard),
-         {:ok, response} <- Client.request_with_telemetry(url, :zkb, request_opts) do
-      Client.parse_json_response(response)
-    else
+  # Handle response from entity killmail requests
+  defp handle_entity_response(response, entity_type, entity_id, operation_atom) do
+    case response do
+      {:ok, response} ->
+        {:ok, response.body}
+
       {:error, %Error{type: :rate_limit} = error} ->
-        Logger.warning("Rate limit exceeded for zkillboard",
-          entity_type: entity_type,
-          entity_id: entity_id,
-          operation: operation_atom,
-          error: error
-        )
+        log_rate_limit_error(entity_type, entity_id, operation_atom, error)
+        {:error, error}
 
+      {:error, %Error{} = error} ->
         {:error, error}
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # Extract rate limit logging to reduce complexity
+  defp log_rate_limit_error(entity_type, entity_id, operation_atom, error) do
+    Logger.warning("Rate limit exceeded for zkillboard",
+      entity_type: entity_type,
+      entity_id: entity_id,
+      operation: operation_atom,
+      error: error
+    )
   end
 
   @doc """
@@ -347,15 +376,12 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
     url = "#{base_url()}/systemID/#{system_id}/"
 
     request_opts =
-      Client.build_request_opts(
-        headers: Client.eve_api_headers(),
-        timeout: @zkb_timeout_ms
-      )
+      []
 
     request_opts = Keyword.put(request_opts, :operation, :fetch_system_killmails_esi)
 
-    case Client.request_with_telemetry(url, :zkb, request_opts) do
-      {:ok, response} -> Client.parse_json_response(response)
+    case http_client().get_zkb(url, [], request_opts) do
+      {:ok, response} -> {:ok, response.body}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -394,17 +420,14 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
     url = "#{base_url()}/systemID/#{system_id}/"
 
     request_opts =
-      Client.build_request_opts(
-        headers: Client.eve_api_headers(),
-        timeout: @zkb_timeout_ms
-      )
+      []
 
     request_opts = Keyword.put(request_opts, :operation, :get_system_killmail_count)
 
-    case Client.request_with_telemetry(url, :zkb, request_opts) do
+    case http_client().get_zkb(url, [], request_opts) do
       {:ok, response} ->
-        case Client.parse_json_response(response) do
-          {:ok, data} when is_list(data) ->
+        case response.body do
+          data when is_list(data) ->
             count = length(data)
 
             Logger.debug("Successfully fetched system killmail count from ZKB",
@@ -416,7 +439,7 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
 
             {:ok, count}
 
-          {:ok, _} ->
+          _ ->
             error_reason =
               Error.zkb_error(
                 :unexpected_response,
@@ -432,17 +455,17 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
             )
 
             {:error, error_reason}
-
-          {:error, reason} ->
-            Logger.error("Failed to fetch system killmail count from ZKB",
-              system_id: system_id,
-              operation: :get_system_killmail_count,
-              error: reason,
-              step: :error
-            )
-
-            {:error, reason}
         end
+
+      {:error, %Error{} = error} ->
+        Logger.error("Failed to fetch system killmail count from ZKB",
+          system_id: system_id,
+          operation: :get_system_killmail_count,
+          error: error,
+          step: :error
+        )
+
+        {:error, error}
 
       {:error, reason} ->
         Logger.error("Failed to fetch system killmail count from ZKB",
@@ -491,30 +514,27 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
     url = "#{base_url()}/systems/"
 
     request_opts =
-      Client.build_request_opts(
-        headers: Client.eve_api_headers(),
-        timeout: @zkb_timeout_ms
-      )
+      []
 
     request_opts = Keyword.put(request_opts, :operation, :fetch_active_systems)
 
-    case Client.request_with_telemetry(url, :zkb, request_opts) do
+    case http_client().get_zkb(url, [], request_opts) do
       {:ok, response} ->
-        case Client.parse_json_response(response) do
-          {:ok, systems} when is_list(systems) ->
+        case response.body do
+          systems when is_list(systems) ->
             {:ok, systems}
 
-          {:ok, _} ->
+          _ ->
             {:error,
              Error.zkb_error(
                :unexpected_response,
                "Expected list of systems but got different format",
                false
              )}
-
-          {:error, reason} ->
-            {:error, reason}
         end
+
+      {:error, %Error{} = error} ->
+        {:error, error}
 
       {:error, reason} ->
         {:error, reason}
@@ -636,7 +656,7 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
     @zkb_base_url
   end
 
-  # Note: Response parsing now handled by WandererKills.Ingest.Http.Client
+  # Note: Response parsing now handled by WandererKills.Http.Client
 
   @doc """
   Validates and logs the format of killmails received from zKillboard API.
@@ -672,5 +692,106 @@ defmodule WandererKills.Ingest.Killmails.ZkbClient do
           count: length(killmails)
         })
     end
+  end
+
+  @doc """
+  Fetches historical killmail IDs for a specific date from zKillboard.
+  Date should be in YYYYMMDD format (e.g., "20240101").
+  Returns {:ok, map} where map contains killmail_id => hash pairs.
+  """
+  @spec fetch_history(String.t()) :: {:ok, map()} | {:error, Error.t()}
+  def fetch_history(date) when is_binary(date) do
+    # Validate date format (YYYYMMDD)
+    if Regex.match?(~r/^\d{8}$/, date) do
+      Logger.debug("Fetching historical kills from ZKB",
+        date: date,
+        operation: :fetch_history,
+        step: :start
+      )
+
+      fetch_history_with_rate_limit(date)
+    else
+      {:error, Error.validation_error(:invalid_format, "Invalid date format: #{inspect(date)}")}
+    end
+  end
+
+  def fetch_history(invalid_date) do
+    {:error,
+     Error.validation_error(:invalid_format, "Invalid date format: #{inspect(invalid_date)}")}
+  end
+
+  defp fetch_history_with_rate_limit(date) do
+    url = "#{@zkb_base_url}/history/#{date}.json"
+
+    Logger.debug("Making HTTP request to zkillboard history API",
+      url: url,
+      date: date
+    )
+
+    case http_client().get_zkb(url, [], timeout: @zkb_timeout_ms) do
+      {:ok, %{body: body}} ->
+        handle_history_response(body, date)
+
+      {:error, %Error{} = error} ->
+        handle_history_error(error, date)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp handle_history_response(response, date) when is_map(response) do
+    Logger.debug("Successfully fetched historical kills",
+      date: date,
+      count: map_size(response)
+    )
+
+    {:ok, response}
+  end
+
+  # Dialyzer can't determine when this clause would be reached, but it's a defensive measure
+  # for cases where the API returns non-JSON content (e.g., error pages)
+  @dialyzer {:nowarn_function, handle_history_response: 2}
+  defp handle_history_response(response, date) do
+    Logger.error("Unexpected response format from zkillboard history API",
+      date: date,
+      response: response,
+      response_type: typeof(response)
+    )
+
+    {:error, Error.http_error(:invalid_response, "Expected map, got #{typeof(response)}")}
+  end
+
+  # Helper function to get type information for logging
+  @dialyzer {:nowarn_function, typeof: 1}
+  defp typeof(term) when is_map(term), do: "map"
+  defp typeof(term) when is_atom(term), do: "atom"
+  defp typeof(term) when is_binary(term), do: "string"
+  defp typeof(term) when is_list(term), do: "list"
+  defp typeof(term) when is_number(term), do: "number"
+  defp typeof(_term), do: "unknown"
+
+  defp handle_history_error(%Error{type: :rate_limit} = error, date) do
+    Logger.warning("Rate limit exceeded for zkillboard history",
+      date: date,
+      operation: :fetch_history,
+      error: error
+    )
+
+    {:error, error}
+  end
+
+  defp handle_history_error(reason, date) do
+    Logger.error("Failed to fetch historical kills",
+      date: date,
+      error: reason
+    )
+
+    {:error, reason}
+  end
+
+  # Get the configured HTTP client implementation
+  defp http_client do
+    Application.get_env(:wanderer_kills, :http, [])[:client] || Client
   end
 end

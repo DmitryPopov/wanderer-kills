@@ -13,8 +13,8 @@ defmodule WandererKills.Ingest.HistoricalFetcher do
   # Removed unused aliases
   alias WandererKills.Core.Support.{Error, SupervisedTask}
   alias WandererKills.Ingest.Killmails.{UnifiedProcessor, ZkbClient}
-  alias WandererKills.Ingest.RateLimiter
-  alias WandererKills.Subs.SubscriptionManager
+  alias WandererKills.Ingest.SmartRateLimiter
+  alias WandererKills.Subs.SimpleSubscriptionManager, as: SubscriptionManager
   # Conditional web dependency
 
   @type preload_request :: %{
@@ -481,14 +481,20 @@ defmodule WandererKills.Ingest.HistoricalFetcher do
 
   defp process_page_with_rate_limit(request, system_id, page_kills, buffer_pid) do
     # Check rate limit before each page
-    case RateLimiter.check_rate_limit(:zkillboard) do
+    case SmartRateLimiter.check_rate_limit(:zkillboard) do
       :ok ->
         handle_page_processing(request, page_kills, buffer_pid)
 
-      {:error, %Error{type: :rate_limit}} ->
-        # Wait and retry
-        Logger.warning("Rate limited, waiting 60 seconds", system_id: system_id)
-        Process.sleep(60_000)
+      {:error, %Error{type: :rate_limit, details: details}} ->
+        # Use retry_after_ms from rate limiter if available, otherwise fallback to 60s
+        retry_after_ms = get_in(details, [:retry_after_ms]) || 60_000
+
+        Logger.warning("Rate limited, waiting #{retry_after_ms} ms",
+          system_id: system_id,
+          retry_after_ms: retry_after_ms
+        )
+
+        Process.sleep(retry_after_ms)
         :retry
 
       {:error, error} ->

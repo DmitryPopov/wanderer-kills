@@ -15,6 +15,7 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
   require Logger
 
   alias WandererKills.Core.Support.Error
+  alias WandererKills.Ingest.Killmails.ZkbClient
 
   # Request priorities (lower number = higher priority)
   @priorities %{
@@ -24,32 +25,37 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
     preload: 2,
     # Background system updates
     background: 3,
+    # Historical streaming (low priority)
+    historical: 4,
     # Bulk operations
-    bulk: 4
+    bulk: 5
   }
 
   defmodule State do
     @moduledoc "Internal state for SmartRateLimiter GenServer"
     defstruct [
+      # Mode: :simple or :advanced
+      mode: :simple,
+
+      # Simple mode state (backward compatible with RateLimiter)
+      service_buckets: %{},
+
+      # Advanced mode state
       # Request queue (priority queue)
       request_queue: :queue.new(),
-
       # Pending requests (for deduplication)
       pending_requests: %{},
-
       # Rate limit state
       current_tokens: 0,
       max_tokens: 100,
       refill_rate: 50,
       last_refill: nil,
-
       # Circuit breaker
       circuit_state: :closed,
       failure_count: 0,
       last_failure: nil,
       # 30 seconds
       circuit_timeout: 30_000,
-
       # Rate window detection
       rate_limit_history: [],
       # Default 1 minute
@@ -83,6 +89,58 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @doc """
+  Check rate limit for a service or URL.
+
+  ## Examples
+
+      check_rate_limit(:zkillboard)
+      check_rate_limit("https://zkillboard.com/api/...")
+
+  Returns :ok if a token was available, {:error, _} otherwise.
+  """
+  @spec check_rate_limit(:zkillboard | :esi) :: :ok | {:error, Error.t()}
+  def check_rate_limit(service) when service in [:zkillboard, :esi] do
+    GenServer.call(__MODULE__, {:consume_token, service})
+  end
+
+  @spec check_rate_limit(String.t()) :: :ok | {:error, :rate_limited}
+  def check_rate_limit(url) when is_binary(url) do
+    service =
+      cond do
+        String.contains?(url, "zkillboard.com") -> :zkillboard
+        String.contains?(url, "zkillredisq.stream") -> :zkillboard
+        String.contains?(url, "esi.evetech.net") -> :esi
+        true -> nil
+      end
+
+    if service do
+      case check_rate_limit(service) do
+        :ok -> :ok
+        {:error, _} -> {:error, :rate_limited}
+      end
+    else
+      # Unknown service, allow it
+      :ok
+    end
+  end
+
+  @doc """
+  Gets the current state of a bucket (simple mode, for monitoring/debugging).
+  """
+  @spec get_bucket_state(:zkillboard | :esi) :: map()
+  def get_bucket_state(service) when service in [:zkillboard, :esi] do
+    GenServer.call(__MODULE__, {:get_bucket_state, service})
+  end
+
+  @doc """
+  Resets a bucket to full capacity (simple mode, useful for testing).
+  """
+  @spec reset_bucket(:zkillboard | :esi) :: :ok
+  def reset_bucket(service) when service in [:zkillboard, :esi] do
+    GenServer.cast(__MODULE__, {:reset_bucket, service})
   end
 
   @doc """
@@ -120,6 +178,76 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
 
   @impl true
   def init(opts) do
+    # Get mode from configuration or default to simple
+    mode = Keyword.get(opts, :mode, get_mode_from_config())
+
+    case mode do
+      :simple ->
+        init_simple_mode(opts)
+
+      :advanced ->
+        init_advanced_mode(opts)
+
+      _ ->
+        Logger.warning("[SmartRateLimiter] Unknown mode #{inspect(mode)}, defaulting to simple")
+        init_simple_mode(opts)
+    end
+  end
+
+  defp get_mode_from_config do
+    Application.get_env(:wanderer_kills, :smart_rate_limiter, [])
+    |> Keyword.get(:mode, :simple)
+  end
+
+  defp init_simple_mode(opts) do
+    # Get configuration from smart_rate_limiter application env or opts
+    app_config = Application.get_env(:wanderer_kills, :smart_rate_limiter, [])
+
+    zkb_capacity = app_config[:zkb_capacity] || Keyword.get(opts, :zkb_capacity, 10)
+    zkb_refill_rate = app_config[:zkb_refill_rate] || Keyword.get(opts, :zkb_refill_rate, 10)
+    esi_capacity = app_config[:esi_capacity] || Keyword.get(opts, :esi_capacity, 100)
+    esi_refill_rate = app_config[:esi_refill_rate] || Keyword.get(opts, :esi_refill_rate, 100)
+
+    service_buckets = %{
+      zkillboard: %{
+        tokens: zkb_capacity * 1.0,
+        capacity: zkb_capacity,
+        refill_rate: zkb_refill_rate,
+        last_refill: System.monotonic_time(:millisecond)
+      },
+      esi: %{
+        tokens: esi_capacity * 1.0,
+        capacity: esi_capacity,
+        refill_rate: esi_refill_rate,
+        last_refill: System.monotonic_time(:millisecond)
+      }
+    }
+
+    state = %State{
+      mode: :simple,
+      service_buckets: service_buckets,
+      config: %{
+        zkb_capacity: zkb_capacity,
+        zkb_refill_rate: zkb_refill_rate,
+        esi_capacity: esi_capacity,
+        esi_refill_rate: esi_refill_rate
+      }
+    }
+
+    # Schedule periodic token refill every second
+    Process.send_after(self(), :refill_tokens, 1_000)
+
+    Logger.info("[SmartRateLimiter] Started in simple mode",
+      zkb_capacity: zkb_capacity,
+      zkb_refill_rate: zkb_refill_rate,
+      esi_capacity: esi_capacity,
+      esi_refill_rate: esi_refill_rate
+    )
+
+    {:ok, state}
+  end
+
+  defp init_advanced_mode(opts) do
     config = %{
       max_tokens: Keyword.get(opts, :max_tokens, 100),
       refill_rate: Keyword.get(opts, :refill_rate, 50),
@@ -130,6 +258,7 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
     }
 
     state = %State{
+      mode: :advanced,
       current_tokens: config.max_tokens,
       max_tokens: config.max_tokens,
       refill_rate: config.refill_rate,
@@ -141,13 +270,47 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
     # Schedule token refill
     schedule_token_refill(config.refill_interval_ms)
 
-    Logger.info("[SmartRateLimiter] Started with config: #{inspect(config)}")
+    Logger.info("[SmartRateLimiter] Started in advanced mode with config: #{inspect(config)}")
 
     {:ok, state}
   end
 
   @impl true
-  def handle_call({:request, request, coalesce}, from, state) do
+  def handle_call({:request, request, _coalesce}, _from, %{mode: :simple} = state) do
+    # In simple mode, immediately execute the request without queueing
+    case ZkbClient.fetch_system_killmails(request.params.system_id, request.params.opts) do
+      {:ok, kills} ->
+        {:reply, {:ok, kills}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:consume_token, service}, _from, %{mode: :simple} = state) do
+    handle_simple_token_consumption(service, state)
+  end
+
+  def handle_call({:get_bucket_state, service}, _from, %{mode: :simple} = state) do
+    bucket = Map.get(state.service_buckets, service)
+
+    if bucket do
+      # Calculate current tokens with refill
+      now = System.monotonic_time(:millisecond)
+      elapsed_ms = now - bucket.last_refill
+      elapsed_minutes = elapsed_ms / 60_000
+
+      tokens_to_add = elapsed_minutes * bucket.refill_rate
+      current_tokens = min(bucket.tokens + tokens_to_add, bucket.capacity * 1.0)
+
+      bucket_info = %{bucket | tokens: current_tokens}
+      {:reply, bucket_info, state}
+    else
+      {:reply, %{tokens: 0, capacity: 0, refill_rate: 0, last_refill: 0}, state}
+    end
+  end
+
+  def handle_call({:request, request, coalesce}, from, %{mode: :advanced} = state) do
     case state.circuit_state do
       :open ->
         # Circuit is open, reject immediately
@@ -161,8 +324,20 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
     end
   end
 
-  def handle_call(:get_stats, _from, state) do
+  def handle_call(:get_stats, _from, %{mode: :simple} = state) do
     stats = %{
+      mode: :simple,
+      service_buckets: state.service_buckets,
+      zkb_tokens: get_in(state.service_buckets, [:zkillboard, :tokens]) || 0,
+      esi_tokens: get_in(state.service_buckets, [:esi, :tokens]) || 0
+    }
+
+    {:reply, {:ok, stats}, state}
+  end
+
+  def handle_call(:get_stats, _from, %{mode: :advanced} = state) do
+    stats = %{
+      mode: :advanced,
       circuit_state: state.circuit_state,
       current_tokens: state.current_tokens,
       queue_size: :queue.len(state.request_queue),
@@ -175,7 +350,31 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
   end
 
   @impl true
-  def handle_cast({:request_complete, request_id, result}, state) do
+  def handle_cast({:reset_bucket, service}, %{mode: :simple} = state) do
+    case Map.get(state.service_buckets, service) do
+      nil ->
+        {:noreply, state}
+
+      bucket ->
+        updated_bucket = %{
+          bucket
+          | tokens: bucket.capacity * 1.0,
+            last_refill: System.monotonic_time(:millisecond)
+        }
+
+        new_buckets = Map.put(state.service_buckets, service, updated_bucket)
+        new_state = %{state | service_buckets: new_buckets}
+
+        Logger.info("[SmartRateLimiter] Simple mode bucket reset",
+          service: service,
+          tokens: bucket.capacity
+        )
+
+        {:noreply, new_state}
+    end
+  end
+
+  def handle_cast({:request_complete, request_id, result}, %{mode: :advanced} = state) do
     # Handle completed request and reply to all waiters
     case find_and_remove_pending_request(state.pending_requests, request_id) do
       {nil, pending_requests} ->
@@ -205,7 +404,16 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
   end
 
   @impl true
-  def handle_info(:refill_tokens, state) do
+  def handle_info(:refill_tokens, %{mode: :simple} = state) do
+    new_state = refill_simple_tokens(state)
+
+    # Schedule next refill
+    Process.send_after(self(), :refill_tokens, 1_000)
+
+    {:noreply, new_state}
+  end
+
+  def handle_info(:refill_tokens, %{mode: :advanced} = state) do
     new_state = refill_tokens(state)
 
     # Try to process queued requests
@@ -217,13 +425,13 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
     {:noreply, final_state}
   end
 
-  def handle_info(:process_queue, state) do
+  def handle_info(:process_queue, %{mode: :advanced} = state) do
     # Process queued requests after delay
     new_state = process_queue(state)
     {:noreply, new_state}
   end
 
-  def handle_info(:check_circuit, state) do
+  def handle_info(:check_circuit, %{mode: :advanced} = state) do
     new_state =
       if state.circuit_state == :open do
         # Try to transition to half-open
@@ -235,13 +443,91 @@ defmodule WandererKills.Ingest.SmartRateLimiter do
     {:noreply, new_state}
   end
 
-  def handle_info({:request_timeout, request_id}, state) do
+  def handle_info({:request_timeout, request_id}, %{mode: :advanced} = state) do
     # Handle request timeout
     new_state = handle_request_timeout(request_id, state)
     {:noreply, new_state}
   end
 
+  # Catch-all for other messages in simple mode
+  def handle_info(_msg, %{mode: :simple} = state) do
+    {:noreply, state}
+  end
+
   ## Private Functions
+
+  # Simple mode functions (backward compatible with RateLimiter)
+
+  defp handle_simple_token_consumption(service, state) do
+    bucket = Map.get(state.service_buckets, service)
+
+    if bucket && bucket.tokens >= 1.0 do
+      # Consume a token
+      updated_bucket = %{bucket | tokens: bucket.tokens - 1.0}
+      new_buckets = Map.put(state.service_buckets, service, updated_bucket)
+      new_state = %{state | service_buckets: new_buckets}
+
+      # Emit telemetry for successful token consumption
+      :telemetry.execute(
+        [:wanderer_kills, :rate_limiter, :token_consumed],
+        %{tokens_remaining: updated_bucket.tokens},
+        %{service: service}
+      )
+
+      {:reply, :ok, new_state}
+    else
+      # No tokens available
+      tokens_available = if bucket, do: bucket.tokens, else: 0
+      capacity = if bucket, do: bucket.capacity, else: 0
+      refill_rate = if bucket, do: bucket.refill_rate, else: 0
+
+      Logger.warning("[SmartRateLimiter] Simple mode rate limit exceeded",
+        service: service,
+        available_tokens: tokens_available,
+        capacity: capacity
+      )
+
+      # Emit telemetry for rate limit exceeded
+      :telemetry.execute(
+        [:wanderer_kills, :rate_limiter, :rate_limited],
+        %{tokens_available: tokens_available},
+        %{service: service}
+      )
+
+      # Calculate time until next token is available
+      tokens_needed = 1.0 - tokens_available
+      minutes_to_wait = if refill_rate > 0, do: tokens_needed / refill_rate, else: 1.0
+      retry_after_ms = ceil(minutes_to_wait * 60_000)
+
+      {:reply,
+       {:error,
+        Error.rate_limit_error("Rate limit exceeded for #{service}", %{
+          service: service,
+          tokens_available: tokens_available,
+          retry_after_ms: retry_after_ms
+        })}, state}
+    end
+  end
+
+  defp refill_simple_tokens(state) do
+    now = System.monotonic_time(:millisecond)
+
+    new_buckets =
+      Enum.reduce(state.service_buckets, %{}, fn {service, bucket}, acc ->
+        elapsed_ms = now - bucket.last_refill
+        elapsed_minutes = elapsed_ms / 60_000
+
+        tokens_to_add = elapsed_minutes * bucket.refill_rate
+        new_tokens = min(bucket.tokens + tokens_to_add, bucket.capacity * 1.0)
+
+        updated_bucket = %{bucket | tokens: new_tokens, last_refill: now}
+        Map.put(acc, service, updated_bucket)
+      end)
+
+    %{state | service_buckets: new_buckets}
+  end
+
+  # Advanced mode functions
 
   defp handle_request(request, from, coalesce, state) do
     request_key = request_key(request)

@@ -8,7 +8,7 @@ defmodule WandererKills.Application do
     1. EtsOwner for WebSocket stats tracking
     2. A Task.Supervisor for background jobs
     3. Phoenix.PubSub for event broadcasting
-    4. SubscriptionSupervisor and related components for subscription handling
+    4. SimpleSubscriptionManager for simplified subscription handling
     5. Cachex instance for unified caching
     6. Observability/monitoring processes
     7. Phoenix Endpoint (WandererKillsWeb.Endpoint)
@@ -20,7 +20,6 @@ defmodule WandererKills.Application do
   require Logger
 
   alias WandererKills.Config
-  alias WandererKills.Core.Observability.Telemetry
   alias WandererKills.Core.ShipTypes.Updater
   alias WandererKills.Core.Storage.KillmailStore
   alias WandererKills.Core.Support.SupervisedTask
@@ -31,17 +30,21 @@ defmodule WandererKills.Application do
 
   @impl true
   def start(_type, _args) do
+    # 0) Validate feature flag configuration
+    validate_feature_flags!()
+
     # 1) Initialize ETS for our unified KillmailStore
     KillmailStore.init_tables!()
 
     # 2) Attach telemetry handlers
-    Telemetry.attach_handlers()
+    # Telemetry.attach_batch_handlers()
 
     # 3) Build children list
     children =
       (core_children() ++ cache_children() ++ observability_children())
       |> maybe_web_components()
       |> maybe_redisq()
+      |> maybe_historical_streaming()
 
     # 4) Start the supervisor
     opts = [strategy: :one_for_one, name: WandererKills.Supervisor]
@@ -50,11 +53,14 @@ defmodule WandererKills.Application do
       {:ok, pid} ->
         Logger.info("[Application] Supervisor started successfully")
         # Start ship type update asynchronously without blocking application startup
-        Task.Supervisor.start_child(WandererKills.TaskSupervisor, fn ->
-          # Give the system a moment to fully start
-          Process.sleep(1000)
-          start_ship_type_update()
-        end)
+        SupervisedTask.start_child(
+          fn ->
+            Process.sleep(1000)
+            start_ship_type_update()
+          end,
+          task_name: "startup_ship_type_update",
+          metadata: %{module: __MODULE__}
+        )
 
         Logger.info("[Application] Application startup completed successfully")
         {:ok, pid}
@@ -68,27 +74,42 @@ defmodule WandererKills.Application do
   # Core OTP processes that don't depend on web functionality
   defp core_children do
     base_children = [
+      # Start Finch for HTTP requests
+      {Finch,
+       name: WandererKills.Finch,
+       pools: %{
+         :default => [size: 10, count: 2],
+         "https://zkillredisq.stream" => [
+           size: 2,
+           count: 1,
+           conn_opts: [timeout: 60_000],
+           # >45s poll timeout; adjust via config if needed
+           conn_max_idle_time: 90_000
+         ]
+       }},
       WandererKills.Core.EtsOwner,
       Task.Supervisor.child_spec(name: WandererKills.TaskSupervisor),
       {Phoenix.PubSub, name: WandererKills.PubSub},
-      WandererKills.Subs.Subscriptions.CharacterIndex,
-      WandererKills.Subs.Subscriptions.SystemIndex,
-      WandererKills.Subs.SubscriptionRegistry,
-      WandererKills.Subs.SubscriptionSupervisor,
-      WandererKills.Ingest.RateLimiter,
-      WandererKills.Ingest.HistoricalFetcher
+      WandererKills.Http.ConnectionMonitor,
+      WandererKills.Subs.SimpleSubscriptionManager,
+      WandererKills.Ingest.HistoricalFetcher,
+      WandererKills.Core.Storage.CleanupWorker,
+      WandererKills.Core.Storage.MemoryMonitor
     ]
 
-    # Add smart rate limiting components if enabled
-    base_children ++ maybe_smart_rate_limiting_children()
+    # Add smart rate limiting components (always add SmartRateLimiter, conditionally add others)
+    base_children ++
+      [
+        {WandererKills.Ingest.SmartRateLimiter,
+         Application.get_env(:wanderer_kills, :smart_rate_limiter, [])}
+      ] ++ maybe_add_request_coalescer_child()
   end
 
-  defp maybe_smart_rate_limiting_children do
+  defp maybe_add_request_coalescer_child do
     features = Application.get_env(:wanderer_kills, :features, [])
 
     []
     |> maybe_add_request_coalescer(features[:request_coalescing])
-    |> maybe_add_smart_rate_limiter(features[:smart_rate_limiting])
   end
 
   defp maybe_add_request_coalescer(children, true) do
@@ -98,22 +119,13 @@ defmodule WandererKills.Application do
 
   defp maybe_add_request_coalescer(children, _), do: children
 
-  defp maybe_add_smart_rate_limiter(children, true) do
-    config = Application.get_env(:wanderer_kills, :smart_rate_limiter, [])
-    [{WandererKills.Ingest.SmartRateLimiter, config} | children]
-  end
-
-  defp maybe_add_smart_rate_limiter(children, _), do: children
-
-  # Observability and monitoring processes
+  # Observability and monitoring processes (consolidated)
   defp observability_children do
     [
-      WandererKills.Core.Observability.ApiTracker,
       WandererKills.Core.Observability.Metrics,
       WandererKills.Core.Observability.Monitoring,
-      WandererKills.Core.Observability.TelemetryMetrics,
-      WandererKills.Core.Observability.WebSocketStats,
-      WandererKills.Core.Observability.UnifiedStatus,
+      WandererKills.Core.Observability.Telemetry,
+      WandererKillsWeb.Channels.HeartbeatMonitor,
       {:telemetry_poller, measurements: telemetry_measurements(), period: :timer.seconds(10)}
     ]
   end
@@ -145,15 +157,17 @@ defmodule WandererKills.Application do
       {WandererKills.Core.Observability.Monitoring, :measure_http_requests, []},
       {WandererKills.Core.Observability.Monitoring, :measure_cache_operations, []},
       {WandererKills.Core.Observability.Monitoring, :measure_fetch_operations, []},
-      {WandererKills.Core.Observability.Monitoring, :measure_system_resources, []},
-      {WandererKills.Core.Observability.WebSocketStats, :measure_websocket_metrics, []}
+      {WandererKills.Core.Observability.Monitoring, :measure_system_resources, []}
     ]
   end
 
   # Conditionally include web components based on configuration
   defp maybe_web_components(children) do
     if start_web_components?() do
-      children ++ [WandererKillsWeb.Endpoint]
+      children ++
+        [
+          WandererKillsWeb.Endpoint
+        ]
     else
       children
     end
@@ -161,7 +175,21 @@ defmodule WandererKills.Application do
 
   defp maybe_redisq(children) do
     if Config.start_redisq?() do
-      children ++ [WandererKills.Ingest.RedisQ]
+      children ++
+        [
+          WandererKills.Ingest.CircuitBreakerMonitor,
+          WandererKills.Ingest.RedisQ
+        ]
+    else
+      children
+    end
+  end
+
+  defp maybe_historical_streaming(children) do
+    config = Application.get_env(:wanderer_kills, :historical_streaming, [])
+
+    if Keyword.get(config, :enabled, false) do
+      children ++ [WandererKills.Ingest.Historical.HistoricalStreamer]
     else
       children
     end
@@ -206,5 +234,33 @@ defmodule WandererKills.Application do
 
   defp handle_task_start_result({:error, reason}) do
     Logger.error("Failed to start ship type update task: #{inspect(reason)}")
+  end
+
+  # Validate feature flag configuration to prevent invalid setups
+  defp validate_feature_flags! do
+    features = Application.get_env(:wanderer_kills, :features, [])
+
+    request_coalescing = features[:request_coalescing]
+    smart_rate_limiting = features[:smart_rate_limiting]
+
+    if request_coalescing == true and smart_rate_limiting == false do
+      raise """
+      Invalid feature flag configuration detected!
+
+      Request coalescing is enabled but smart rate limiting is disabled.
+      Request coalescing depends on smart rate limiting to function properly.
+
+      Please ensure both features are enabled together:
+      config :wanderer_kills, :features,
+        request_coalescing: true,
+        smart_rate_limiting: true
+
+      Or disable request coalescing:
+      config :wanderer_kills, :features,
+        request_coalescing: false
+      """
+    end
+
+    :ok
   end
 end

@@ -7,10 +7,47 @@ defmodule WandererKillsWeb.KillsController do
   """
 
   use Phoenix.Controller, namespace: WandererKillsWeb
+  use OpenApiSpex.ControllerSpecs
+
   import WandererKillsWeb.Api.Validators
   require Logger
-  alias WandererKills.Core.Client
+  alias WandererKills.Core.Storage.KillmailStore
   alias WandererKills.Core.Support.Error
+  alias WandererKills.Core.Support.Utils
+  alias WandererKills.Ingest.Killmails.ZkbClient
+
+  operation(:list,
+    summary: "List kills for a system",
+    description: "Fetches killmail data for a specific system with optional time filtering",
+    parameters: [
+      system_id: [
+        in: :path,
+        description: "EVE Online system ID",
+        type: :integer,
+        required: true,
+        example: 30_000_142
+      ],
+      since_hours: [
+        in: :query,
+        description: "Fetch kills from the last N hours (default: 24)",
+        type: :integer,
+        required: false,
+        example: 24
+      ],
+      limit: [
+        in: :query,
+        description: "Maximum number of kills to return",
+        type: :integer,
+        required: false,
+        example: 100
+      ]
+    ],
+    responses: %{
+      200 => {"Success", "application/json", WandererKillsWeb.Schemas.KillsResponse},
+      400 => {"Invalid parameters", "application/json", WandererKillsWeb.Schemas.Error},
+      500 => {"Server error", "application/json", WandererKillsWeb.Schemas.Error}
+    }
+  )
 
   @doc """
   Lists kills for a specific system with time filtering.
@@ -28,9 +65,21 @@ defmodule WandererKillsWeb.KillsController do
         limit: limit
       )
 
-      case Client.fetch_system_killmails(system_id, since_hours, limit) do
+      # Convert parameters to ZkbClient format
+      opts = [past_seconds: since_hours * 3600]
+
+      case Utils.retry_http_operation(
+             fn -> ZkbClient.fetch_system_killmails(system_id, opts) end,
+             operation_name: "ZKB fetch system killmails #{system_id}"
+           ) do
         {:ok, killmails} ->
-          response = build_cached_response(killmails, false)
+          # Apply limit and time filtering
+          filtered_killmails =
+            killmails
+            |> filter_killmails_by_time(since_hours)
+            |> Enum.take(limit)
+
+          response = build_cached_response(filtered_killmails, false)
           render_success(conn, response)
 
         {:error, reason} ->
@@ -49,6 +98,40 @@ defmodule WandererKillsWeb.KillsController do
     end
   end
 
+  operation(:bulk,
+    summary: "Fetch kills for multiple systems",
+    description: "Fetches killmail data for multiple systems with optional time filtering",
+    request_body:
+      {"Request body", "application/json",
+       %OpenApiSpex.Schema{
+         type: :object,
+         properties: %{
+           system_ids: %OpenApiSpex.Schema{
+             type: :array,
+             items: %OpenApiSpex.Schema{type: :integer},
+             description: "List of EVE Online system IDs",
+             example: [30_000_142, 30_000_144]
+           },
+           since_hours: %OpenApiSpex.Schema{
+             type: :integer,
+             description: "Fetch kills from the last N hours",
+             example: 24
+           },
+           limit: %OpenApiSpex.Schema{
+             type: :integer,
+             description: "Maximum number of kills to return per system",
+             example: 100
+           }
+         },
+         required: [:system_ids]
+       }},
+    responses: %{
+      200 => {"Success", "application/json", WandererKillsWeb.Schemas.BulkKillsResponse},
+      400 => {"Invalid parameters", "application/json", WandererKillsWeb.Schemas.Error},
+      500 => {"Server error", "application/json", WandererKillsWeb.Schemas.Error}
+    }
+  )
+
   @doc """
   Fetches kills for multiple systems.
 
@@ -66,7 +149,16 @@ defmodule WandererKillsWeb.KillsController do
         limit: limit
       )
 
-      {:ok, systems_killmails} = Client.fetch_systems_killmails(system_ids, since_hours, limit)
+      # Fetch killmails for all systems
+      tasks =
+        Enum.map(system_ids, fn system_id ->
+          Task.async(fn -> fetch_system_killmails_task(system_id, since_hours, limit) end)
+        end)
+
+      systems_killmails =
+        tasks
+        |> Enum.map(&Task.await(&1, 30_000))
+        |> Enum.into(%{})
 
       response = %{
         systems_kills: systems_killmails,
@@ -83,6 +175,24 @@ defmodule WandererKillsWeb.KillsController do
     end
   end
 
+  operation(:cached,
+    summary: "Get cached kills for a system",
+    description: "Returns cached killmail data for a specific system",
+    parameters: [
+      system_id: [
+        in: :path,
+        description: "EVE Online system ID",
+        type: :integer,
+        required: true,
+        example: 30_000_142
+      ]
+    ],
+    responses: %{
+      200 => {"Success", "application/json", WandererKillsWeb.Schemas.KillsResponse},
+      400 => {"Invalid parameters", "application/json", WandererKillsWeb.Schemas.Error}
+    }
+  )
+
   @doc """
   Returns cached kills for a system.
 
@@ -94,7 +204,7 @@ defmodule WandererKillsWeb.KillsController do
       {:ok, system_id} ->
         Logger.debug("Fetching cached kills", system_id: system_id)
 
-        killmails = Client.fetch_cached_killmails(system_id)
+        killmails = KillmailStore.get_system_killmails(system_id)
         response = build_cached_response(killmails, true)
         render_success(conn, response)
 
@@ -102,6 +212,25 @@ defmodule WandererKillsWeb.KillsController do
         render_error(conn, 400, "Invalid system ID format", "INVALID_SYSTEM_ID")
     end
   end
+
+  operation(:show,
+    summary: "Get a specific killmail",
+    description: "Returns detailed information about a specific killmail",
+    parameters: [
+      killmail_id: [
+        in: :path,
+        description: "Killmail ID",
+        type: :integer,
+        required: true,
+        example: 123_456_789
+      ]
+    ],
+    responses: %{
+      200 => {"Success", "application/json", WandererKillsWeb.Schemas.KillmailResponse},
+      400 => {"Invalid parameters", "application/json", WandererKillsWeb.Schemas.Error},
+      404 => {"Killmail not found", "application/json", WandererKillsWeb.Schemas.Error}
+    }
+  )
 
   @doc """
   Shows a specific killmail by ID.
@@ -112,20 +241,98 @@ defmodule WandererKillsWeb.KillsController do
   def show(conn, %{"killmail_id" => killmail_id_str}) do
     case validate_killmail_id(killmail_id_str) do
       {:ok, killmail_id} ->
-        Logger.debug("Fetching specific killmail", killmail_id: killmail_id)
-
-        case Client.get_killmail(killmail_id) do
-          nil ->
-            render_error(conn, 404, "Killmail not found", "NOT_FOUND")
-
-          killmail ->
-            render_success(conn, killmail)
-        end
+        fetch_killmail_with_fallback(conn, killmail_id)
 
       {:error, %Error{}} ->
         render_error(conn, 400, "Invalid killmail ID format", "INVALID_KILLMAIL_ID")
     end
   end
+
+  defp fetch_killmail_with_fallback(conn, killmail_id) do
+    Logger.debug("Fetching specific killmail", killmail_id: killmail_id)
+
+    case KillmailStore.get(killmail_id) do
+      {:ok, killmail} ->
+        render_success(conn, killmail)
+
+      {:error, _} ->
+        fetch_killmail_from_zkb(conn, killmail_id)
+    end
+  end
+
+  defp fetch_killmail_from_zkb(conn, killmail_id) do
+    case Utils.retry_http_operation(
+           fn -> ZkbClient.fetch_killmail(killmail_id) end,
+           operation_name: "ZKB fetch individual killmail #{killmail_id}"
+         ) do
+      {:ok, raw_killmail} ->
+        # Process through enrichment pipeline for full API response
+        case enrich_killmail_for_api(raw_killmail) do
+          {:ok, enriched_killmail} ->
+            render_success(conn, enriched_killmail)
+
+          {:error, _} ->
+            # Fallback to raw data if enrichment fails
+            render_success(conn, raw_killmail)
+        end
+
+      {:error, _} ->
+        render_error(conn, 404, "Killmail not found", "NOT_FOUND")
+    end
+  end
+
+  defp enrich_killmail_for_api(raw_killmail) do
+    alias WandererKills.Ingest.Killmails.UnifiedProcessor
+    alias WandererKills.Domain.Killmail
+
+    # Process through enrichment pipeline without storing
+    case UnifiedProcessor.process_killmail(
+           raw_killmail,
+           DateTime.add(DateTime.utc_now(), -7, :day),
+           store: false,
+           enrich: true
+         ) do
+      {:ok, %Killmail{} = enriched_killmail} ->
+        # Convert to map for JSON response
+        {:ok, Killmail.to_map(enriched_killmail)}
+
+      {:ok, :kill_older} ->
+        # Older killmail, return enriched version anyway
+        case UnifiedProcessor.process_killmail(
+               raw_killmail,
+               DateTime.add(DateTime.utc_now(), -365, :day),
+               store: false,
+               enrich: true
+             ) do
+          {:ok, %Killmail{} = enriched_killmail} ->
+            {:ok, Killmail.to_map(enriched_killmail)}
+
+          error ->
+            error
+        end
+
+      error ->
+        error
+    end
+  end
+
+  operation(:count,
+    summary: "Get kill count for a system",
+    description: "Returns the total number of kills for a specific system",
+    parameters: [
+      system_id: [
+        in: :path,
+        description: "EVE Online system ID",
+        type: :integer,
+        required: true,
+        example: 30_000_142
+      ]
+    ],
+    responses: %{
+      200 => {"Success", "application/json", WandererKillsWeb.Schemas.KillCountResponse},
+      400 => {"Invalid parameters", "application/json", WandererKillsWeb.Schemas.Error}
+    }
+  )
 
   @doc """
   Returns kill count for a system.
@@ -138,7 +345,7 @@ defmodule WandererKillsWeb.KillsController do
       {:ok, system_id} ->
         Logger.debug("Fetching system kill count", system_id: system_id)
 
-        count = Client.get_system_killmail_count(system_id)
+        {:ok, count} = KillmailStore.get_system_killmail_count(system_id)
 
         response = %{
           system_id: system_id,
@@ -153,6 +360,14 @@ defmodule WandererKillsWeb.KillsController do
     end
   end
 
+  operation(:not_found,
+    summary: "Handle undefined API routes",
+    description: "Returns a 404 error for undefined API routes",
+    responses: %{
+      404 => {"Not Found", "application/json", WandererKillsWeb.Schemas.Error}
+    }
+  )
+
   @doc """
   Handles undefined API routes.
   """
@@ -162,6 +377,46 @@ defmodule WandererKillsWeb.KillsController do
   end
 
   # Private helper functions
+
+  defp filter_killmails_by_time(killmails, since_hours) do
+    cutoff_time = DateTime.utc_now() |> DateTime.add(-since_hours * 3600, :second)
+
+    Enum.filter(killmails, fn killmail ->
+      killmail
+      |> get_killmail_time()
+      |> should_include_killmail?(cutoff_time)
+    end)
+  end
+
+  defp get_killmail_time(killmail) do
+    get_in(killmail, ["kill_time"]) || get_in(killmail, ["killmail_time"])
+  end
+
+  defp should_include_killmail?(nil, _cutoff_time), do: true
+
+  defp should_include_killmail?(time_str, cutoff_time) do
+    case DateTime.from_iso8601(time_str) do
+      {:ok, kill_time, _} -> DateTime.compare(kill_time, cutoff_time) != :lt
+      _ -> true
+    end
+  end
+
+  defp fetch_system_killmails_task(system_id, since_hours, limit) do
+    opts = [past_seconds: since_hours * 3600]
+
+    case ZkbClient.fetch_system_killmails(system_id, opts) do
+      {:ok, killmails} ->
+        filtered =
+          killmails
+          |> filter_killmails_by_time(since_hours)
+          |> Enum.take(limit)
+
+        {system_id, filtered}
+
+      {:error, _} ->
+        {system_id, []}
+    end
+  end
 
   @spec build_cached_response(list(), boolean(), term()) :: map()
   defp build_cached_response(killmails, cached, error \\ nil) do

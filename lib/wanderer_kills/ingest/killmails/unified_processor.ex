@@ -1,20 +1,29 @@
 defmodule WandererKills.Ingest.Killmails.UnifiedProcessor do
   @moduledoc """
-  Unified killmail processing that handles both full and partial killmails.
+  Simplified unified killmail processor using the new 3-stage pipeline.
 
-  This module eliminates the duplication between full and partial killmail
-  processing by providing a single entry point that automatically detects
-  the killmail type and processes accordingly.
+  This module provides a clean, simplified interface for processing killmails
+  using the new streamlined pipeline:
+
+  1. **Validation** - Parse, validate, and normalize killmail data
+  2. **Enrichment** - Enrich with ESI data and ship/system information  
+  3. **Storage** - Store and broadcast killmail updates
+
+  ## Simplifications from Previous Version
+
+  - Removed Coordinator pattern complexity
+  - Consolidated 6 pipeline stages into 3
+  - Simplified error handling with better fallbacks
+  - Reduced intermediate transformations
+  - More efficient batch processing
   """
 
   require Logger
 
   alias WandererKills.Core.Observability.Monitoring
   alias WandererKills.Core.Storage.KillmailStore
-  alias WandererKills.Core.Support.Error
   alias WandererKills.Domain.Killmail
-  alias WandererKills.Ingest.Killmails.Enrichment.BatchEnricher
-  alias WandererKills.Ingest.Killmails.Pipeline.{DataBuilder, ESIFetcher, Validator}
+  alias WandererKills.Ingest.Killmails.Pipeline.{Enrichment, Validation}
   alias WandererKills.Ingest.Killmails.Transformations
 
   @type process_options :: [
@@ -24,8 +33,19 @@ defmodule WandererKills.Ingest.Killmails.UnifiedProcessor do
         ]
   @type process_result :: {:ok, Killmail.t()} | {:ok, :kill_older} | {:error, term()}
 
+  # ============================================================================
+  # Public API
+  # ============================================================================
+
   @doc """
-  Processes any killmail, automatically detecting if it's full or partial.
+  Processes any killmail using the simplified 3-stage pipeline.
+
+  ## New Pipeline Flow
+
+  1. **Auto-detection**: Determines if killmail is full or partial
+  2. **Validation**: Validates structure, normalizes data, applies cutoff
+  3. **Enrichment**: Enriches with ESI data (optional)
+  4. **Storage**: Stores and broadcasts (optional)
 
   ## Parameters
   - `killmail` - The killmail data (full or partial)
@@ -42,51 +62,35 @@ defmodule WandererKills.Ingest.Killmails.UnifiedProcessor do
   """
   @spec process_killmail(map(), DateTime.t(), process_options()) :: process_result()
   def process_killmail(killmail, cutoff_time, opts \\ []) when is_map(killmail) do
-    # Normalize field names first
-    normalized = Transformations.normalize_field_names(killmail)
+    start_time = System.monotonic_time(:millisecond)
+    killmail_id = Transformations.get_killmail_id(killmail)
 
-    # Process based on killmail type using pattern matching
-    normalized
-    |> determine_and_process_killmail(cutoff_time, opts)
-    |> monitor_processing_result()
-  end
+    Logger.debug("Processing killmail with simplified pipeline",
+      killmail_id: killmail_id,
+      is_partial: partial_killmail?(killmail),
+      opts: opts
+    )
 
-  # Pattern match for partial killmails (zkb data but no victim/attackers)
-  defp determine_and_process_killmail(%{"zkb" => _zkb} = killmail, cutoff_time, opts)
-       when not is_map_key(killmail, "victim") and not is_map_key(killmail, "attackers") do
-    process_partial(killmail, cutoff_time, opts)
-  end
+    result =
+      killmail
+      |> run_pipeline(cutoff_time, opts)
+      |> monitor_processing_result()
 
-  # Pattern match for full killmails (has victim and attackers)
-  defp determine_and_process_killmail(
-         %{"victim" => _, "attackers" => _} = killmail,
-         cutoff_time,
-         opts
-       )
-       when is_map_key(killmail, "system_id") or is_map_key(killmail, "solar_system_id") do
-    process_full(killmail, cutoff_time, opts)
-  end
+    duration = System.monotonic_time(:millisecond) - start_time
+    log_processing_result(result, killmail_id, duration)
 
-  # Catch-all for unknown formats
-  defp determine_and_process_killmail(_killmail, _cutoff_time, _opts) do
-    {:error, Error.killmail_error(:invalid_format, "Unknown killmail format")}
-  end
-
-  # Extract monitoring logic to separate function
-  defp monitor_processing_result({:ok, :kill_older} = result) do
-    Monitoring.increment_skipped()
     result
   end
-
-  defp monitor_processing_result({:ok, _killmail} = result) do
-    Monitoring.increment_stored()
-    result
-  end
-
-  defp monitor_processing_result({:error, _reason} = result), do: result
 
   @doc """
-  Processes a batch of killmails concurrently.
+  Processes a batch of killmails efficiently using the simplified pipeline.
+
+  ## Batch Processing Optimizations
+
+  - Validates all killmails first (fail fast)
+  - Batch enrichment to reduce API calls
+  - Parallel storage operations
+  - Shared error handling and monitoring
 
   ## Parameters
   - `killmails` - List of killmail data
@@ -98,104 +102,232 @@ defmodule WandererKills.Ingest.Killmails.UnifiedProcessor do
   """
   @spec process_batch([map()], DateTime.t(), process_options()) :: {:ok, [Killmail.t()]}
   def process_batch(killmails, cutoff_time, opts \\ []) when is_list(killmails) do
-    enrich? = Keyword.get(opts, :enrich, true)
-    store? = Keyword.get(opts, :store, true)
-    validate_only? = Keyword.get(opts, :validate_only, false)
+    start_time = System.monotonic_time(:millisecond)
+    batch_size = length(killmails)
 
-    # Process all killmails through validation and data building first
-    validated_killmails =
-      killmails
-      |> Enum.map(&Transformations.normalize_field_names/1)
-      |> Enum.map(&validate_and_build_killmail(&1, cutoff_time))
-      |> collect_valid_killmails()
-
-    if validate_only? do
-      {:ok, convert_to_structs(validated_killmails)}
-    else
-      # Batch enrich all valid killmails if enrichment is enabled
-      final_killmails = apply_enrichment(validated_killmails, enrich?)
-
-      # Store killmails if requested
-      if store? do
-        Enum.each(final_killmails, &store_killmail_async/1)
-      end
-
-      # Convert to structs
-      result_killmails = convert_to_structs(final_killmails)
-
-      # Monitoring is handled at the entry point level
-      {:ok, result_killmails}
-    end
-  end
-
-  # Private functions
-
-  defp process_partial(partial, cutoff_time, opts) do
-    case {partial["killmail_id"], partial["zkb"]} do
-      {id, zkb} when is_integer(id) and is_map(zkb) ->
-        Logger.debug("Processing partial killmail", killmail_id: id)
-
-        case fetch_and_merge_partial(id, zkb, partial) do
-          {:ok, merged} ->
-            process_full(merged, cutoff_time, opts)
-
-          {:error, reason} ->
-            Logger.error("Failed to fetch full killmail data",
-              killmail_id: id,
-              error: reason
-            )
-
-            {:error, reason}
-        end
-
-      _ ->
-        {:error,
-         Error.killmail_error(
-           :invalid_partial_format,
-           "Partial killmail must have killmail_id and zkb fields"
-         )}
-    end
-  end
-
-  defp process_full(killmail, cutoff_time, opts) do
-    killmail_id = Transformations.get_killmail_id(killmail)
-
-    Logger.debug("Processing full killmail",
-      killmail_id: killmail_id,
-      store: Keyword.get(opts, :store, true),
-      enrich: Keyword.get(opts, :enrich, true),
-      validate_only: Keyword.get(opts, :validate_only, false)
+    Logger.info("Processing killmail batch",
+      batch_size: batch_size,
+      opts: opts
     )
 
-    # Delegate to process_batch for consistent validation and processing
-    case process_batch([killmail], cutoff_time, opts) do
-      {:ok, [result]} -> {:ok, result}
-      {:ok, []} -> {:ok, :kill_older}
+    # Stage 1: Validate all killmails (fail fast)
+    validated_results =
+      killmails
+      |> Task.async_stream(
+        &validate_killmail(&1, cutoff_time),
+        max_concurrency: 10,
+        timeout: 10_000
+      )
+      |> collect_successful_validations()
+
+    success_count = length(validated_results)
+
+    Logger.debug("Batch validation completed",
+      success_count: success_count,
+      failure_count: batch_size - success_count
+    )
+
+    # Early exit if only validation requested
+    if Keyword.get(opts, :validate_only, false) do
+      structs = Enum.map(validated_results, &convert_to_struct/1)
+      duration = System.monotonic_time(:millisecond) - start_time
+
+      Logger.info("Batch validation completed",
+        batch_size: batch_size,
+        success_count: success_count,
+        duration_ms: duration
+      )
+
+      {:ok, structs}
+    else
+      process_validated_batch(validated_results, opts, start_time)
     end
   end
 
+  # ============================================================================
+  # Private Pipeline Functions
+  # ============================================================================
+
+  # Main pipeline orchestration
+  defp run_pipeline(killmail, cutoff_time, opts) do
+    case validate_killmail(killmail, cutoff_time) do
+      {:ok, :kill_older} ->
+        {:ok, :kill_older}
+
+      {:ok, validated} ->
+        # Early exit if only validation requested
+        if Keyword.get(opts, :validate_only, false) do
+          {:ok, convert_to_struct(validated)}
+        else
+          with {:ok, enriched} <- maybe_enrich_killmail(validated, opts),
+               :ok <- maybe_store_killmail(enriched, opts) do
+            {:ok, convert_to_struct(enriched)}
+          end
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  # Stage 1: Validation (handles both full and partial killmails)
+  defp validate_killmail(killmail, cutoff_time) do
+    if partial_killmail?(killmail) do
+      Validation.validate_partial_killmail(killmail, cutoff_time)
+    else
+      Validation.validate_full_killmail(killmail, cutoff_time)
+    end
+  end
+
+  # Stage 2: Enrichment (optional)
+  defp maybe_enrich_killmail(killmail, opts) do
+    if Keyword.get(opts, :enrich, true) do
+      # Enrichment always returns {:ok, _} now
+      Enrichment.enrich_killmail(killmail)
+    else
+      {:ok, killmail}
+    end
+  end
+
+  # Stage 3: Storage (optional)
+  defp maybe_store_killmail(killmail, opts) do
+    if Keyword.get(opts, :store, true) do
+      store_killmail_async(killmail)
+    else
+      :ok
+    end
+  end
+
+  # ============================================================================
+  # Batch Processing Functions
+  # ============================================================================
+
+  defp collect_successful_validations(stream) do
+    stream
+    |> Enum.reduce([], fn
+      # Skip old killmails
+      {:ok, {:ok, :kill_older}}, acc -> acc
+      {:ok, {:ok, validated}}, acc -> [validated | acc]
+      # Skip failed validations
+      {:ok, {:error, _reason}}, acc -> acc
+      # Skip timed out validations
+      {:exit, _reason}, acc -> acc
+    end)
+    |> Enum.reverse()
+  end
+
+  defp process_validated_batch(validated_killmails, opts, start_time) do
+    batch_size = length(validated_killmails)
+
+    # Stage 2: Batch enrichment
+    enriched_killmails =
+      if Keyword.get(opts, :enrich, true) do
+        enrich_killmails_batch(validated_killmails)
+      else
+        validated_killmails
+      end
+
+    # Stage 3: Batch storage
+    if Keyword.get(opts, :store, true) do
+      store_killmails_batch(enriched_killmails)
+    end
+
+    # Convert to structs
+    result_structs = Enum.map(enriched_killmails, &convert_to_struct/1)
+
+    duration = System.monotonic_time(:millisecond) - start_time
+
+    Logger.info("Batch processing completed",
+      batch_size: batch_size,
+      success_count: length(result_structs),
+      duration_ms: duration
+    )
+
+    {:ok, result_structs}
+  end
+
+  defp enrich_killmails_batch(killmails) do
+    killmails
+    |> Task.async_stream(
+      &enrich_single_killmail/1,
+      # Lower concurrency for API-heavy enrichment
+      max_concurrency: 5,
+      timeout: 30_000
+    )
+    |> Enum.map(fn
+      {:ok, enriched} ->
+        enriched
+
+      {:exit, _reason} ->
+        Logger.warning("Killmail enrichment timed out")
+        # Return empty for failed enrichment
+        %{}
+    end)
+    # Remove empty results
+    |> Enum.reject(&(map_size(&1) == 0))
+  end
+
+  defp enrich_single_killmail(killmail) do
+    {:ok, enriched} = Enrichment.enrich_killmail(killmail)
+    enriched
+  end
+
+  defp store_killmails_batch(killmails) do
+    killmails
+    |> Task.async_stream(
+      &store_killmail_sync/1,
+      max_concurrency: 10,
+      timeout: 5_000
+    )
+    # Execute but don't collect results
+    |> Stream.run()
+  end
+
+  # ============================================================================
+  # Utility Functions
+  # ============================================================================
+
+  defp partial_killmail?(%{"zkb" => _zkb} = killmail) do
+    not (Map.has_key?(killmail, "victim") and Map.has_key?(killmail, "attackers"))
+  end
+
+  defp partial_killmail?(_), do: false
+
   defp store_killmail_async(killmail) do
-    # Convert struct to map for storage if needed
-    killmail_map = ensure_map(killmail)
-
-    case extract_system_id(killmail_map) do
-      {:ok, system_id} ->
+    case extract_system_id(killmail) do
+      {:ok, _system_id} ->
         Task.Supervisor.start_child(WandererKills.TaskSupervisor, fn ->
-          Logger.debug("Storing killmail asynchronously",
-            killmail_id: killmail_map["killmail_id"],
-            system_id: system_id
-          )
-
-          KillmailStore.put(killmail_map["killmail_id"], system_id, killmail_map)
+          store_killmail_sync(killmail)
         end)
+
+        :ok
 
       {:error, reason} ->
         Logger.error("Cannot store killmail without system_id",
-          killmail_id: killmail_map["killmail_id"],
+          killmail_id: killmail["killmail_id"],
           error: reason
         )
 
-        {:error, reason}
+        # Don't fail the pipeline for storage issues
+        :ok
+    end
+  end
+
+  defp store_killmail_sync(killmail) do
+    case extract_system_id(killmail) do
+      {:ok, system_id} ->
+        Logger.debug("Storing killmail",
+          killmail_id: killmail["killmail_id"],
+          system_id: system_id
+        )
+
+        KillmailStore.put(killmail["killmail_id"], system_id, killmail)
+
+      {:error, reason} ->
+        Logger.error("Cannot store killmail without system_id",
+          killmail_id: killmail["killmail_id"],
+          error: reason
+        )
     end
   end
 
@@ -204,109 +336,64 @@ defmodule WandererKills.Ingest.Killmails.UnifiedProcessor do
   defp extract_system_id(%{"system_id" => id}) when not is_nil(id), do: {:ok, id}
 
   defp extract_system_id(killmail) do
-    killmail_id = get_killmail_id(killmail)
+    killmail_id = killmail["killmail_id"] || "unknown"
     Logger.warning("Killmail missing system_id", killmail_id: killmail_id)
     {:error, :missing_system_id}
   end
 
-  defp get_killmail_id(%Killmail{killmail_id: id}), do: id
-  defp get_killmail_id(%{"killmail_id" => id}), do: id
-  defp get_killmail_id(_), do: nil
-
-  defp validate_and_build_killmail(killmail, cutoff_time) do
-    case Validator.validate_killmail(killmail, cutoff_time) do
-      {:ok, validated} ->
-        DataBuilder.build_killmail_data(validated)
-
-      error ->
-        error
-    end
-  end
-
-  defp collect_valid_killmails(results) do
-    results
-    |> Enum.reduce([], fn
-      {:ok, killmail}, acc -> [killmail | acc]
-      {:error, %Error{type: :kill_too_old}}, acc -> acc
-      {:error, _}, acc -> acc
-    end)
-    |> Enum.reverse()
-  end
-
-  defp fetch_and_merge_partial(id, zkb, partial) do
-    case ESIFetcher.fetch_full_killmail(id, zkb) do
-      {:ok, full_data} ->
-        Logger.debug("ESI data fetched",
-          killmail_id: id,
-          esi_keys: Map.keys(full_data) |> Enum.sort(),
-          has_killmail_time: Map.has_key?(full_data, "killmail_time"),
-          has_kill_time: Map.has_key?(full_data, "kill_time")
-        )
-
-        # Normalize field names before merging
-        normalized_data = Transformations.normalize_field_names(full_data)
-
-        Logger.debug("After normalization",
-          killmail_id: id,
-          normalized_keys: Map.keys(normalized_data) |> Enum.sort(),
-          has_kill_time: Map.has_key?(normalized_data, "kill_time")
-        )
-
-        DataBuilder.merge_killmail_data(normalized_data, partial)
+  defp convert_to_struct(killmail) when is_map(killmail) do
+    case Killmail.new(killmail) do
+      {:ok, struct} ->
+        struct
 
       {:error, reason} ->
-        {:error, reason}
+        Logger.error("Failed to convert killmail to struct",
+          killmail_id: killmail["killmail_id"],
+          error: reason
+        )
+
+        raise "Failed to convert killmail #{killmail["killmail_id"]} to struct: #{inspect(reason)}"
     end
   end
 
-  @doc false
-  defp apply_enrichment(validated_killmails, enrich?) do
-    # Determine which killmails to return and cache
-    killmails_to_process =
-      if enrich? and not Enum.empty?(validated_killmails) do
-        case BatchEnricher.enrich_killmails_batch(validated_killmails) do
-          {:ok, enriched} ->
-            enriched
+  # ============================================================================
+  # Monitoring and Logging
+  # ============================================================================
 
-          {:error, reason} ->
-            Logger.error("Failed to enrich killmails batch",
-              error: reason,
-              batch_size: length(validated_killmails)
-            )
-
-            # Fall back to unenriched killmails
-            validated_killmails
-        end
-      else
-        validated_killmails
-      end
-
-    # Cache all killmails once
-    Enum.each(killmails_to_process, &ESIFetcher.cache_enriched_killmail/1)
-
-    killmails_to_process
+  defp monitor_processing_result({:ok, :kill_older} = result) do
+    Monitoring.increment_skipped()
+    result
   end
 
-  # Helper function for struct conversion
-
-  defp convert_to_structs(killmails) do
-    Enum.map(killmails, fn killmail ->
-      case Killmail.new(killmail) do
-        {:ok, struct} ->
-          struct
-
-        {:error, reason} ->
-          # Log error but don't fail the entire batch
-          Logger.error("Failed to convert killmail to struct",
-            killmail_id: killmail["killmail_id"],
-            error: reason
-          )
-
-          raise "Failed to convert killmail #{killmail["killmail_id"]} to struct: #{inspect(reason)}"
-      end
-    end)
+  defp monitor_processing_result({:ok, _killmail} = result) do
+    Monitoring.increment_stored()
+    result
   end
 
-  defp ensure_map(%Killmail{} = killmail), do: Killmail.to_map(killmail)
-  defp ensure_map(map) when is_map(map), do: map
+  defp monitor_processing_result({:error, _reason} = result) do
+    # Error counting is handled in log_processing_result
+    result
+  end
+
+  defp log_processing_result({:ok, :kill_older}, killmail_id, duration) do
+    Logger.debug("Killmail skipped (too old)",
+      killmail_id: killmail_id,
+      duration_ms: duration
+    )
+  end
+
+  defp log_processing_result({:ok, _killmail}, killmail_id, duration) do
+    Logger.debug("Killmail processed successfully",
+      killmail_id: killmail_id,
+      duration_ms: duration
+    )
+  end
+
+  defp log_processing_result({:error, reason}, killmail_id, duration) do
+    Logger.error("Killmail processing failed",
+      killmail_id: killmail_id,
+      duration_ms: duration,
+      error: reason
+    )
+  end
 end

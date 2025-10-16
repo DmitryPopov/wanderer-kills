@@ -9,8 +9,7 @@ defmodule MigrationPerformanceTest do
 
   use ExUnit.Case, async: false
 
-  alias WandererKills.Subs.Subscriptions.{CharacterIndex, SystemIndex}
-  alias WandererKills.Core.Observability.{CharacterSubscriptionHealth, SystemSubscriptionHealth}
+  alias WandererKills.Subs.{CharacterIndex, SystemIndex}
 
   @test_character_ids [123_456, 789_012, 345_678, 901_234, 567_890]
   @test_system_ids [30_000_142, 30_000_144, 30_000_148, 30_001_407, 30_045_349]
@@ -18,16 +17,9 @@ defmodule MigrationPerformanceTest do
   @lookup_iterations 1000
 
   setup do
-    # Start both indexes if not already started
-    case CharacterIndex.start_link([]) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    case SystemIndex.start_link([]) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
+    # Initialize both indexes if not already initialized
+    CharacterIndex.init()
+    SystemIndex.init()
 
     # Clear any existing data
     CharacterIndex.clear()
@@ -75,7 +67,7 @@ defmodule MigrationPerformanceTest do
         :timer.tc(fn ->
           for _i <- 1..@lookup_iterations do
             test_entity = Enum.random(@test_character_ids)
-            CharacterIndex.find_subscriptions_for_entity(test_entity)
+            CharacterIndex.find_subscriptions_for_character(test_entity)
           end
         end)
 
@@ -101,7 +93,7 @@ defmodule MigrationPerformanceTest do
       {time, _result} =
         :timer.tc(fn ->
           for _i <- 1..batch_iterations do
-            CharacterIndex.find_subscriptions_for_entities(@test_character_ids)
+            CharacterIndex.find_subscriptions_for_characters(@test_character_ids)
           end
         end)
 
@@ -123,7 +115,7 @@ defmodule MigrationPerformanceTest do
 
       {time, health} =
         :timer.tc(fn ->
-          CharacterSubscriptionHealth.check_health()
+          WandererKills.Core.Observability.Health.check_component(:character_subscriptions)
         end)
 
       # Health checks should complete quickly
@@ -168,7 +160,7 @@ defmodule MigrationPerformanceTest do
         :timer.tc(fn ->
           for _i <- 1..@lookup_iterations do
             test_entity = Enum.random(@test_system_ids)
-            SystemIndex.find_subscriptions_for_entity(test_entity)
+            SystemIndex.find_subscriptions_for_system(test_entity)
           end
         end)
 
@@ -191,7 +183,7 @@ defmodule MigrationPerformanceTest do
 
       {time, health} =
         :timer.tc(fn ->
-          SystemSubscriptionHealth.check_health()
+          WandererKills.Core.Observability.Health.check_component(:system_subscriptions)
         end)
 
       # Health checks should complete quickly

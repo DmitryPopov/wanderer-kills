@@ -29,8 +29,7 @@ defmodule WandererKills.Integration.CacheSystemFunctionsTest do
 
     test "complete system killmail workflow" do
       # Initially, system should have no killmails
-      assert {:error, %WandererKills.Core.Support.Error{type: :not_found}} =
-               Cache.list_system_killmails(@test_system_id)
+      assert {:ok, []} = Cache.list_system_killmails(@test_system_id)
 
       # Add killmails one by one
       Enum.each(@test_killmail_ids, fn killmail_id ->
@@ -234,8 +233,7 @@ defmodule WandererKills.Integration.CacheSystemFunctionsTest do
       assert {:ok, true} = Cache.delete(:systems, "killmails:#{@test_system_id}")
 
       # System should now return empty killmails but keep other data
-      assert {:error, %WandererKills.Core.Support.Error{type: :not_found}} =
-               Cache.list_system_killmails(@test_system_id)
+      assert {:ok, []} = Cache.list_system_killmails(@test_system_id)
 
       assert {:ok, 1} = Cache.get(:systems, "kill_count:#{@test_system_id}")
       assert true = Cache.system_fetched_recently?(@test_system_id)
@@ -303,8 +301,7 @@ defmodule WandererKills.Integration.CacheSystemFunctionsTest do
       invalid_system_id = -1
 
       # All operations should handle invalid IDs without crashing
-      assert {:error, %WandererKills.Core.Support.Error{type: :not_found}} =
-               Cache.list_system_killmails(invalid_system_id)
+      assert {:ok, []} = Cache.list_system_killmails(invalid_system_id)
 
       assert {:ok, true} = Cache.add_system_killmail(invalid_system_id, 999)
 

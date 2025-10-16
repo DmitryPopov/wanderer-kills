@@ -9,9 +9,50 @@ defmodule WandererKillsWeb.SubscriptionController do
   """
 
   use WandererKillsWeb, :controller
+  use OpenApiSpex.ControllerSpecs
 
   alias WandererKills.Core.Support.Error
-  alias WandererKills.Subs.SubscriptionManager
+  alias WandererKills.Subs.SimpleSubscriptionManager
+
+  operation(:create,
+    summary: "Create webhook subscription",
+    description: "Create a new webhook subscription for killmail notifications",
+    request_body:
+      {"Request body", "application/json",
+       %OpenApiSpex.Schema{
+         type: :object,
+         properties: %{
+           subscriber_id: %OpenApiSpex.Schema{
+             type: :string,
+             description: "Unique identifier for the subscriber",
+             example: "user123"
+           },
+           system_ids: %OpenApiSpex.Schema{
+             type: :array,
+             items: %OpenApiSpex.Schema{type: :integer},
+             description: "List of EVE Online system IDs",
+             example: [30_000_142, 30_000_143]
+           },
+           character_ids: %OpenApiSpex.Schema{
+             type: :array,
+             items: %OpenApiSpex.Schema{type: :integer},
+             description: "List of EVE Online character IDs",
+             example: [95_465_499, 90_379_338]
+           },
+           callback_url: %OpenApiSpex.Schema{
+             type: :string,
+             format: :uri,
+             description: "HTTP/HTTPS URL to receive webhook notifications",
+             example: "https://example.com/webhook"
+           }
+         },
+         required: [:subscriber_id, :callback_url]
+       }},
+    responses: %{
+      201 => {"Success", "application/json", WandererKillsWeb.Schemas.SubscriptionResponse},
+      400 => {"Invalid parameters", "application/json", WandererKillsWeb.Schemas.Error}
+    }
+  )
 
   @doc """
   Create a new webhook subscription.
@@ -31,7 +72,7 @@ defmodule WandererKillsWeb.SubscriptionController do
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def create(conn, params) do
     with {:ok, attrs} <- validate_create_params(params),
-         {:ok, subscription_id} <- SubscriptionManager.add_subscription(attrs) do
+         {:ok, subscription_id} <- SimpleSubscriptionManager.add_subscription(attrs) do
       conn
       |> put_status(:created)
       |> json(%{
@@ -63,6 +104,14 @@ defmodule WandererKillsWeb.SubscriptionController do
     end
   end
 
+  operation(:index,
+    summary: "List all subscriptions",
+    description: "Returns a list of all active webhook subscriptions",
+    responses: %{
+      200 => {"Success", "application/json", WandererKillsWeb.Schemas.SubscriptionListResponse}
+    }
+  )
+
   @doc """
   List all active subscriptions.
 
@@ -70,16 +119,39 @@ defmodule WandererKillsWeb.SubscriptionController do
   """
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _params) do
-    subscriptions = SubscriptionManager.list_subscriptions()
+    subscriptions = SimpleSubscriptionManager.list_subscriptions()
+
+    # Convert structs to maps for JSON serialization
+    subscription_maps =
+      Enum.map(subscriptions, fn sub ->
+        %{
+          id: sub.id,
+          subscriber_id: sub.subscriber_id,
+          type: sub.type,
+          system_ids: sub.system_ids,
+          character_ids: sub.character_ids,
+          callback_url: sub.callback_url,
+          created_at: sub.created_at,
+          updated_at: sub.updated_at
+        }
+      end)
 
     conn
     |> json(%{
       data: %{
-        subscriptions: subscriptions,
+        subscriptions: subscription_maps,
         count: length(subscriptions)
       }
     })
   end
+
+  operation(:stats,
+    summary: "Get subscription statistics",
+    description: "Returns aggregate information and statistics about subscriptions",
+    responses: %{
+      200 => {"Success", "application/json", WandererKillsWeb.Schemas.SubscriptionStatsResponse}
+    }
+  )
 
   @doc """
   Get subscription statistics.
@@ -88,13 +160,31 @@ defmodule WandererKillsWeb.SubscriptionController do
   """
   @spec stats(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def stats(conn, _params) do
-    stats = SubscriptionManager.get_stats()
+    stats = SimpleSubscriptionManager.get_stats()
 
     conn
     |> json(%{
       data: stats
     })
   end
+
+  operation(:delete,
+    summary: "Delete subscriber subscriptions",
+    description: "Delete all subscriptions for a specific subscriber",
+    parameters: [
+      subscriber_id: [
+        in: :path,
+        description: "Subscriber ID to unsubscribe",
+        type: :string,
+        required: true,
+        example: "user123"
+      ]
+    ],
+    responses: %{
+      200 => {"Success", "application/json", WandererKillsWeb.Schemas.SubscriptionDeleteResponse},
+      400 => {"Partial failure", "application/json", WandererKillsWeb.Schemas.Error}
+    }
+  )
 
   @doc """
   Delete all subscriptions for a subscriber.
@@ -103,7 +193,7 @@ defmodule WandererKillsWeb.SubscriptionController do
   """
   @spec delete(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def delete(conn, %{"subscriber_id" => subscriber_id}) do
-    case SubscriptionManager.unsubscribe(subscriber_id) do
+    case SimpleSubscriptionManager.unsubscribe(subscriber_id) do
       :ok ->
         conn
         |> json(%{

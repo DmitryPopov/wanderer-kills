@@ -1,8 +1,8 @@
-defmodule WandererKills.Subs.Subscriptions.FilterTest do
+defmodule WandererKills.Subs.FilterTest do
   use ExUnit.Case, async: true
 
   alias WandererKills.Domain.Killmail
-  alias WandererKills.Subs.Subscriptions.Filter
+  alias WandererKills.Subs.Filter
 
   # Helper to create a valid Killmail struct from test data
   defp create_test_killmail(attrs) do

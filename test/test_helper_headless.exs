@@ -8,8 +8,8 @@ ExUnit.start()
 # Skip Mox setup if not available (headless mode)
 if Code.ensure_loaded?(Mox) do
   # Define core mocks only
-  Mox.defmock(WandererKills.Ingest.Http.Client.Mock,
-    for: WandererKills.Ingest.Http.ClientBehaviour
+  Mox.defmock(WandererKills.Http.ClientMock,
+    for: WandererKills.Http.ClientBehaviour
   )
 
   Mox.defmock(WandererKills.Ingest.Killmails.ZkbClient.Mock,
@@ -52,16 +52,17 @@ defmodule WandererKills.HeadlessTestCase do
     Process.put(:test_unique_id, test_id)
 
     # Clear any existing processes and caches if helper is available
-    if Code.ensure_loaded?(WandererKills.Test.CacheHelpers) do
-      alias WandererKills.Test.CacheHelpers
-      CacheHelpers.clear_all_caches()
+    if Code.ensure_loaded?(WandererKills.TestHelpers) do
+      alias WandererKills.TestHelpers
+      TestHelpers.clear_all_caches()
     end
 
     # Clean up unique test tables on exit
     on_exit(fn ->
-      if Code.ensure_loaded?(WandererKills.Test.EtsHelpers) do
-        alias WandererKills.Test.EtsHelpers
-        EtsHelpers.cleanup_test_tables(test_id)
+      # Simple cleanup - just clear any test-specific data
+      if Code.ensure_loaded?(WandererKills.TestHelpers) do
+        alias WandererKills.TestHelpers
+        TestHelpers.clear_all_caches()
       end
     end)
 

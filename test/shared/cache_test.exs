@@ -1,14 +1,10 @@
 defmodule WandererKills.CacheTest do
   use WandererKills.TestCase
-  use WandererKills.Test.SharedContexts
-  use WandererKills.Test.Tags
 
   alias WandererKills.Core.Cache
   alias WandererKills.TestHelpers
 
-  cache_test_tags()
-
-  setup :with_clean_environment
+  # Test setup is handled by UnifiedTestCase
 
   describe "killmail operations" do
     test "can store and retrieve a killmail" do
@@ -45,8 +41,8 @@ defmodule WandererKills.CacheTest do
     end
 
     test "returns empty list for system with no killmails" do
-      # For a system with no killmails, we get an error
-      assert {:error, %{type: :not_found}} = Cache.list_system_killmails(999)
+      # For a system with no killmails, we get an empty list in a tuple
+      assert {:ok, []} = Cache.list_system_killmails(999)
     end
 
     test "can manage system killmails" do
@@ -62,9 +58,9 @@ defmodule WandererKills.CacheTest do
 
   describe "system timestamp operations" do
     test "can mark system as fetched and check if recently fetched" do
-      timestamp = DateTime.utc_now()
+      timestamp = :os.system_time(:millisecond)
       assert {:ok, true} = Cache.mark_system_fetched(789, timestamp)
-      assert true = Cache.system_fetched_recently?(789)
+      assert Cache.system_fetched_recently?(789)
     end
 
     test "returns false for system with no fetch timestamp" do

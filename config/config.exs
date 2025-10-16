@@ -1,5 +1,10 @@
 import Config
 
+# Register MIME type for Server-Sent Events
+config :mime, :types, %{
+  "text/event-stream" => ["sse"]
+}
+
 # Main application configuration with grouped settings
 config :wanderer_kills,
   # Cache configuration
@@ -20,9 +25,10 @@ config :wanderer_kills,
 
   # HTTP client configuration
   http: [
-    client: WandererKills.Ingest.Http.Client,
+    client: WandererKills.Http.Client,
     request_timeout_ms: 10_000,
     default_timeout_ms: 10_000,
+    redisq_conn_max_idle_time_ms: 90_000,
     retry: [
       max_retries: 3,
       base_delay: 1000,
@@ -37,14 +43,25 @@ config :wanderer_kills,
     batch_concurrency: 5
   ],
 
-  # Rate limiter configuration
-  rate_limiter: [
-    # Increased from 30 to 100
-    zkb_capacity: 100,
-    # Increased from 30 to 50
-    zkb_refill_rate: 50,
-    esi_capacity: 100,
-    esi_refill_rate: 100
+  # Unified smart rate limiter configuration
+  smart_rate_limiter: [
+    # Mode: :simple (backward compatible) or :advanced (with queuing & circuit breaker)
+    mode: :simple,
+
+    # Simple mode configuration (backward compatible with old RateLimiter)
+    zkb_capacity: 300,
+    zkb_refill_rate: 200,
+    esi_capacity: 500,
+    esi_refill_rate: 3000,
+
+    # Advanced mode configuration (only used when mode: :advanced)
+    max_tokens: 150,
+    refill_rate: 75,
+    refill_interval_ms: 1000,
+    circuit_failure_threshold: 10,
+    circuit_timeout_ms: 30_000,
+    queue_timeout_ms: 60_000,
+    max_queue_size: 5000
   ],
 
   # RedisQ stream configuration
@@ -56,10 +73,19 @@ config :wanderer_kills,
     max_backoff_ms: 30_000,
     backoff_factor: 2,
     task_timeout_ms: 10_000,
+    request_timeout_ms: 45_000,
     retry: [
       max_retries: 5,
       base_delay: 500
     ]
+  ],
+
+  # Circuit breaker monitor configuration
+  circuit_breaker_monitor: [
+    # Check every minute
+    check_interval_ms: 60_000,
+    # Alert after 10 minutes
+    alert_threshold_ms: 600_000
   ],
 
   # Parser configuration
@@ -84,17 +110,26 @@ config :wanderer_kills,
   # Storage configuration
   storage: [
     enable_event_streaming: true,
-    gc_interval_ms: 60_000,
-    max_events_per_system: 10_000
+    # 15 minutes cleanup interval (reduced from 1 hour)
+    gc_interval_ms: 900_000,
+    max_events_per_system: 10_000,
+    # Memory monitor configuration
+    memory_check_interval_ms: 30_000,
+    memory_threshold_mb: 1000,
+    emergency_threshold_mb: 1500,
+    emergency_killmail_threshold: 50_000,
+    emergency_removal_percentage: 25
   ],
 
-  # Monitoring and telemetry configuration
-  monitoring: [
+  # Unified observability configuration (monitoring and telemetry)
+  observability: [
+    # Status monitoring intervals
     # 5 minutes
     status_interval_ms: 300_000,
-    health_check_interval_ms: 60_000
-  ],
-  telemetry: [
+    # 1 minute
+    health_check_interval_ms: 60_000,
+
+    # Telemetry configuration
     enabled_metrics: [:cache, :api, :circuit, :event],
     sampling_rate: 1.0,
     # 7 days in seconds
@@ -106,68 +141,66 @@ config :wanderer_kills,
     degraded_threshold: 1000
   ],
 
+  # Dashboard configuration
+  dashboard: [
+    ets_tables: [
+      {:killmails, "🗂️", "Killmails"},
+      {:system_killmails, "🌌", "System Index"},
+      {:system_kill_counts, "📊", "Kill Counts"},
+      {:system_fetch_timestamps, "⏰", "Fetch Times"},
+      {:killmail_events, "📝", "Events"},
+      {:client_offsets, "🔖", "Client Offsets"},
+      {:counters, "🔢", "Counters"}
+    ]
+  ],
+
+  # SSE configuration
+  sse: [
+    max_connections: 100,
+    max_connections_per_ip: 10,
+    heartbeat_interval: 30_000,
+    connection_timeout: 300_000
+  ],
+
+  # Preloader configuration
+  preloader: [
+    system_historical_limit: 1000
+  ],
+
+  # Historical streaming configuration
+  historical_streaming: [
+    enabled: false,
+    start_date: "20240101",
+    daily_limit: 5000,
+    batch_size: 50,
+    batch_interval_ms: 10_000,
+    max_retries: 3,
+    retry_delay_ms: 5_000
+  ],
+
+  # Feature flags configuration
+  features: [
+    # Smart rate limiting (enables advanced features)
+    smart_rate_limiting: true,
+    # Request coalescing (requires smart_rate_limiting)
+    request_coalescing: true
+  ],
+
   # Service startup configuration
   services: [
     start_preloader: true,
     start_redisq: true
   ],
 
-  # Ship types configuration
+  # Ship types configuration - data loaded from priv/data/ship_group_ids.json
   ship_types: [
-    # Valid ship group IDs for EVE Online ships
-    valid_group_ids: [
-      25,
-      26,
-      27,
-      28,
-      29,
-      30,
-      31,
-      237,
-      324,
-      358,
-      380,
-      381,
-      419,
-      420,
-      463,
-      485,
-      513,
-      540,
-      541,
-      543,
-      547,
-      659,
-      830,
-      831,
-      832,
-      833,
-      834,
-      883,
-      893,
-      894,
-      898,
-      900,
-      902,
-      906,
-      941,
-      963,
-      1022,
-      1201,
-      1202,
-      1283,
-      1305,
-      1527,
-      1534,
-      1538,
-      1972,
-      2001
-    ],
-    # Validation thresholds
-    validation: [
-      min_validation_rate: 0.5,
-      min_record_count_for_rate_check: 10
-    ]
+    # Validation thresholds (flattened from nested validation key)
+    min_validation_rate: 0.5,
+    min_record_count_for_rate_check: 10,
+
+    # Download configuration
+    auto_update: true,
+    max_age_days: 30
   ],
 
   # WebSocket subscription validation limits
@@ -182,43 +215,6 @@ config :wanderer_kills,
     max_subscribed_characters: 50_000,
     # EVE character IDs can be up to ~3B
     max_character_id: 3_000_000_000
-  ],
-
-  # Feature flags for gradual rollout
-  features: [
-    # Enable smart rate limiting
-    smart_rate_limiting: false,
-    # Enable request coalescing
-    request_coalescing: false
-  ],
-
-  # Smart rate limiter configuration
-  smart_rate_limiter: [
-    # Token bucket configuration
-    max_tokens: 150,
-    # Increased from 100
-    refill_rate: 75,
-    # Tokens per second
-    refill_interval_ms: 1000,
-    # How often to refill
-
-    # Circuit breaker
-    circuit_failure_threshold: 10,
-    # Failures before opening circuit
-    circuit_timeout_ms: 60_000,
-    # How long circuit stays open
-
-    # Queue management
-    max_queue_size: 5000,
-    # Max queued requests
-    queue_timeout_ms: 300_000
-    # 5 minutes max queue time
-  ],
-
-  # Request coalescing configuration
-  request_coalescer: [
-    # Max time to wait for coalesced request
-    request_timeout_ms: 30_000
   ]
 
 # Configure the Phoenix endpoint
@@ -247,6 +243,12 @@ config :logger,
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
   metadata: :all
+
+# Configure sse_phoenix_pubsub library
+config :sse_phoenix_pubsub,
+  # 10 seconds instead of default 20
+  keep_alive: 10_000,
+  retry: 2_000
 
 # Import environment specific config
 import_config "#{config_env()}.exs"

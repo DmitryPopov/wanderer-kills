@@ -1,11 +1,27 @@
 defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
   use ExUnit.Case, async: false
 
-  alias WandererKills.Core.Observability.TelemetryMetrics
+  alias WandererKills.Core.Observability.Telemetry
 
   setup do
+    # Start the telemetry metrics system if not already started
+    case Process.whereis(WandererKills.Core.Observability.Telemetry) do
+      nil ->
+        {:ok, _pid} = Telemetry.start_link()
+
+      _pid ->
+        # Already started, just attach handlers
+        Telemetry.attach_task_handlers()
+    end
+
     # Ensure clean state
-    TelemetryMetrics.reset_metrics()
+    Telemetry.reset_metrics_with_tasks()
+
+    on_exit(fn ->
+      # Reset metrics after each test to prevent state leakage
+      Telemetry.reset_metrics_with_tasks()
+    end)
+
     :ok
   end
 
@@ -18,7 +34,10 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
         %{task_name: "test_task"}
       )
 
-      metrics = TelemetryMetrics.get_metrics()
+      # Give time for async cast to process
+      Process.sleep(10)
+
+      metrics = Telemetry.get_metrics()
       assert metrics[:tasks_started] == 1
     end
 
@@ -30,7 +49,10 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
         %{task_name: "test_task"}
       )
 
-      metrics = TelemetryMetrics.get_metrics()
+      # Give time for async cast to process
+      Process.sleep(10)
+
+      metrics = Telemetry.get_metrics()
       assert metrics[:tasks_completed] == 1
     end
 
@@ -42,7 +64,10 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
         %{task_name: "test_task", error: "Test error"}
       )
 
-      metrics = TelemetryMetrics.get_metrics()
+      # Give time for async cast to process
+      Process.sleep(10)
+
+      metrics = Telemetry.get_metrics()
       assert metrics[:tasks_failed] == 1
     end
   end
@@ -63,7 +88,10 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
         %{task_name: "subscription_preload"}
       )
 
-      metrics = TelemetryMetrics.get_metrics()
+      # Give time for async cast to process
+      Process.sleep(10)
+
+      metrics = Telemetry.get_metrics()
       assert metrics[:preload_tasks_started] == 1
       assert metrics[:preload_tasks_completed] == 1
       assert metrics[:preload_tasks_failed] == 0
@@ -83,7 +111,10 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
         %{task_name: "subscription_preload", error: "Test error"}
       )
 
-      metrics = TelemetryMetrics.get_metrics()
+      # Give time for async cast to process
+      Process.sleep(10)
+
+      metrics = Telemetry.get_metrics()
       assert metrics[:preload_tasks_started] == 1
       assert metrics[:preload_tasks_failed] == 1
     end
@@ -104,7 +135,10 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
         %{task_name: "webhook_notification"}
       )
 
-      metrics = TelemetryMetrics.get_metrics()
+      # Give time for async cast to process
+      Process.sleep(10)
+
+      metrics = Telemetry.get_metrics()
       assert metrics[:webhook_tasks_started] == 1
       assert metrics[:webhook_tasks_completed] == 1
       assert metrics[:webhooks_sent] == 1
@@ -124,7 +158,10 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
         %{task_name: "send_webhook_notifications", error: "Test error"}
       )
 
-      metrics = TelemetryMetrics.get_metrics()
+      # Give time for async cast to process
+      Process.sleep(10)
+
+      metrics = Telemetry.get_metrics()
       assert metrics[:webhook_tasks_failed] == 1
       assert metrics[:webhooks_failed] == 1
     end
@@ -132,8 +169,8 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
 
   describe "metric retrieval" do
     test "get_metric returns default value for missing keys" do
-      assert TelemetryMetrics.get_metric(:nonexistent) == 0
-      assert TelemetryMetrics.get_metric(:nonexistent, 42) == 42
+      assert Telemetry.get_metric(:nonexistent) == 0
+      assert Telemetry.get_metric(:nonexistent, 42) == 42
     end
 
     test "get_metrics returns all metrics" do
@@ -144,7 +181,10 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
         %{task_name: "test"}
       )
 
-      metrics = TelemetryMetrics.get_metrics()
+      # Give time for async cast to process
+      Process.sleep(10)
+
+      metrics = Telemetry.get_metrics()
       assert is_map(metrics)
       assert Map.has_key?(metrics, :tasks_started)
       assert metrics[:tasks_started] == 1
@@ -160,14 +200,20 @@ defmodule WandererKills.Core.Observability.TelemetryMetricsTest do
         %{task_name: "test"}
       )
 
-      metrics = TelemetryMetrics.get_metrics()
+      # Give time for async cast to process
+      Process.sleep(10)
+
+      metrics = Telemetry.get_metrics()
       assert metrics[:tasks_started] == 1
 
-      # Reset
-      TelemetryMetrics.reset_metrics()
+      # Reset with task initialization
+      Telemetry.reset_metrics_with_tasks()
+
+      # Give time for async cast to process
+      Process.sleep(10)
 
       # Check all counters are back to 0
-      metrics = TelemetryMetrics.get_metrics()
+      metrics = Telemetry.get_metrics()
       assert metrics[:tasks_started] == 0
       assert metrics[:tasks_completed] == 0
       assert metrics[:tasks_failed] == 0

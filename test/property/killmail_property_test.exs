@@ -8,12 +8,11 @@ defmodule WandererKills.Domain.KillmailPropertyTest do
   @moduletag performance: :medium
 
   alias WandererKills.Domain.Killmail
-  alias WandererKills.Test.SimpleGenerators
 
   describe "killmail parsing properties" do
     @tag :property
     test "killmail conversion is consistent" do
-      check all(killmail_data <- SimpleGenerators.simple_killmail()) do
+      check all(killmail_data <- simple_killmail_generator()) do
         case Killmail.new(killmail_data) do
           {:ok, killmail} ->
             # Verify that a valid killmail can be converted back
@@ -59,22 +58,32 @@ defmodule WandererKills.Domain.KillmailPropertyTest do
 
   # Helper functions for simple test data
 
+  defp simple_killmail_generator do
+    fixed_map(%{
+      "killmail_id" => constant(123_456_789),
+      "solar_system_id" => constant(30_000_142),
+      "killmail_time" => constant("2024-01-01T12:00:00Z"),
+      "victim" => simple_victim(),
+      "attackers" => list_of(simple_attacker(), length: 1)
+    })
+  end
+
   defp simple_victim do
-    %{
-      "character_id" => 95_465_499,
-      "corporation_id" => 1_000_009,
-      "ship_type_id" => 587,
-      "damage_taken" => 1337
-    }
+    fixed_map(%{
+      "character_id" => constant(95_465_499),
+      "corporation_id" => constant(1_000_009),
+      "ship_type_id" => constant(587),
+      "damage_taken" => constant(1337)
+    })
   end
 
   defp simple_attacker do
-    %{
-      "character_id" => 95_465_500,
-      "corporation_id" => 1_000_010,
-      "ship_type_id" => 17_619,
-      "damage_done" => 1337,
-      "final_blow" => true
-    }
+    fixed_map(%{
+      "character_id" => constant(95_465_500),
+      "corporation_id" => constant(1_000_010),
+      "ship_type_id" => constant(17_619),
+      "damage_done" => constant(1337),
+      "final_blow" => constant(true)
+    })
   end
 end

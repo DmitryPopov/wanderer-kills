@@ -13,6 +13,8 @@ WandererKills is a real-time EVE Online killmail data service that provides mult
 **Integration Options:**
 - **REST API** - HTTP endpoints for fetching killmail data
 - **WebSocket** - Real-time kill notifications via Phoenix channels  
+- **Server-Sent Events (SSE)** - Simple HTTP-based real-time streaming
+- **Webhook Subscriptions** - HTTP callbacks for killmail updates
 - **PubSub** - Direct message broadcasting for Elixir applications
 - **Client Library** - Elixir behaviour for type-safe integration
 
@@ -34,6 +36,8 @@ http://localhost:4004/api/v1
 | GET    | `/kills/cached/{system_id}`     | Get cached kills only       |
 | GET    | `/killmail/{killmail_id}`       | Get specific killmail       |
 | GET    | `/kills/count/{system_id}`      | Get kill count for system   |
+| GET    | `/kills/stream`                 | Server-Sent Events stream   |
+| GET    | `/kills/stream/enhanced`        | Enhanced SSE with preloading|
 | POST   | `/subscriptions`                | Create webhook subscription |
 | GET    | `/subscriptions`                | List all subscriptions      |
 | GET    | `/subscriptions/stats`          | Get subscription statistics |
@@ -49,6 +53,7 @@ http://localhost:4004/api/v1
 | GET    | `/metrics`          | Service metrics             |
 | GET    | `/websocket`        | WebSocket connection info   |
 | GET    | `/websocket/status` | WebSocket server statistics |
+| GET    | `/api/openapi`      | OpenAPI specification (JSON)|
 
 ### System Kills
 
@@ -202,6 +207,206 @@ GET /api/v1/kills/count/{system_id}
   "timestamp": "2024-01-15T15:00:00Z"
 }
 ```
+
+### Server-Sent Events (SSE) Stream
+
+WandererKills provides two SSE endpoints:
+
+#### Standard SSE Endpoint
+```http
+GET /api/v1/kills/stream
+```
+
+Real-time streaming of killmail data using Server-Sent Events protocol. Uses the `sse_phoenix_pubsub` library for seamless Phoenix PubSub integration.
+
+**Query Parameters:**
+- `system_ids` - Comma-separated list of system IDs to filter (e.g., `30000142,30000144`)
+- `character_ids` - Comma-separated list of character IDs to track as victim/attacker
+- `min_value` - Minimum ISK value threshold for killmails
+
+**Example Request:**
+```bash
+curl -N -H "Accept: text/event-stream" \
+  "http://localhost:4004/api/v1/kills/stream?system_ids=30000142&min_value=100000000"
+```
+
+#### Enhanced SSE Endpoint (NEW)
+```http
+GET /api/v1/kills/stream/enhanced
+```
+
+Advanced SSE endpoint with character-specific historical data preloading and improved server-side filtering. Perfect for applications that need to catch up on historical killmails before streaming real-time data.
+
+**Query Parameters:**
+- `character_ids` - Comma-separated list of character IDs to track
+- `system_ids` - Comma-separated list of system IDs to filter
+- `min_value` - Minimum ISK value threshold for killmails
+- `preload_days` - Number of days of historical data to preload (0-90)
+
+**Key Features:**
+- **Historical Data Preloading**: Fetch up to 90 days of character or system killmails on connection
+- **Server-Side Filtering**: Only receive killmails matching your filters (90%+ bandwidth reduction)
+- **Clear Mode Transitions**: Explicit signals when switching from historical to real-time data
+- **Character-Specific Topics**: Efficient routing without subscribing to all systems
+
+**Example Requests:**
+```bash
+# Character-based historical preloading
+curl -N "http://localhost:4004/api/v1/kills/stream/enhanced?character_ids=123456789,987654321&preload_days=90"
+
+# System-based historical preloading
+curl -N "http://localhost:4004/api/v1/kills/stream/enhanced?system_ids=30000142,30000143&preload_days=30"
+
+# Character preloading takes precedence if both are specified
+curl -N "http://localhost:4004/api/v1/kills/stream/enhanced?character_ids=123456789&system_ids=30000142&preload_days=90"
+```
+
+**Response Headers:**
+
+```http
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+```
+
+**Event Types:**
+
+1. **Connected Event** (sent immediately on connection):
+
+```
+event: connected
+data: {"status": "connected", "filters": {...}, "timestamp": "2024-01-15T14:30:00Z"}
+```
+
+2. **Killmail Event** (new killmail data):
+
+```
+event: killmail
+data: {"killmail_id": 123456789, "kill_time": "2024-01-15T14:30:00Z", "solar_system_id": 30000142, ...}
+```
+
+3. **Batch Event** (historical data - enhanced endpoint only):
+
+```
+event: batch
+data: {"kills": [...], "count": 50, "batch_number": 1, "total_batches": 5}
+```
+
+4. **Transition Event** (enhanced endpoint only):
+
+```
+event: transition
+data: {"status": "historical_complete", "total_historical": 250, "timestamp": "2024-01-15T14:30:00Z"}
+```
+
+5. **Heartbeat Event** (every 30 seconds):
+
+```
+event: heartbeat
+data: {"timestamp": "2024-01-15T14:30:00Z", "mode": "realtime"}
+```
+
+6. **Error Event** (on error conditions):
+
+```
+event: error
+data: {"type": "connection_limit", "message": "Too many connections", "timestamp": "2024-01-15T14:30:00Z"}
+```
+
+**JavaScript Example (Standard Endpoint):**
+```javascript
+const eventSource = new EventSource('/api/v1/kills/stream?system_ids=30000142');
+
+eventSource.addEventListener('connected', (event) => {
+  console.log('Connected to SSE stream');
+});
+
+eventSource.addEventListener('killmail', (event) => {
+  const killmail = JSON.parse(event.data);
+  console.log('New killmail:', killmail);
+});
+
+eventSource.addEventListener('error', (event) => {
+  if (event.readyState === EventSource.CLOSED) {
+    console.log('Connection was closed');
+  } else {
+    const error = JSON.parse(event.data);
+    console.error('SSE error:', error);
+  }
+});
+```
+
+**JavaScript Example (Enhanced Endpoint with Character Preloading):**
+```javascript
+const eventSource = new EventSource('/api/v1/kills/stream/enhanced?character_ids=12345&preload_days=90');
+
+let isRealtime = false;
+let heartbeatCount = 0;
+
+eventSource.addEventListener('connected', (e) => {
+  console.log('Connected to SSE stream', JSON.parse(e.data));
+});
+
+eventSource.addEventListener('batch', (e) => {
+  const batch = JSON.parse(e.data);
+  console.log(`Historical batch ${batch.batch_number}/${batch.total_batches}`);
+  heartbeatCount = 0; // Reset on data
+});
+
+eventSource.addEventListener('transition', (e) => {
+  console.log('Transitioned to realtime mode', JSON.parse(e.data));
+  isRealtime = true;
+});
+
+eventSource.addEventListener('killmail', (e) => {
+  const killmail = JSON.parse(e.data);
+  console.log(`${isRealtime ? 'Realtime' : 'Historical'} killmail:`, killmail);
+  heartbeatCount = 0; // Reset on data
+});
+
+eventSource.addEventListener('heartbeat', (e) => {
+  heartbeatCount++;
+  const hb = JSON.parse(e.data);
+  
+  // Alternative detection: 3 heartbeats without data = realtime
+  if (!isRealtime && heartbeatCount >= 3) {
+    console.log('Detected realtime mode via heartbeat pattern');
+    isRealtime = true;
+  }
+});
+```
+
+**Python Example:**
+```python
+import sseclient
+import requests
+
+def stream_killmails():
+    url = 'http://localhost:4004/api/v1/kills/stream?system_ids=30000142'
+    response = requests.get(url, stream=True, headers={'Accept': 'text/event-stream'})
+    client = sseclient.SSEClient(response)
+    
+    for event in client.events():
+        if event.event == 'killmail':
+            killmail = json.loads(event.data)
+            print(f"New killmail: {killmail['killmail_id']}")
+        elif event.event == 'error':
+            error = json.loads(event.data)
+            print(f"Error: {error['message']}")
+```
+
+**Connection Limits:**
+- Maximum 100 concurrent SSE connections total
+- Maximum 10 connections per IP address
+- Connections timeout after 5 minutes of inactivity
+- Automatic reconnection with exponential backoff recommended
+
+**Advantages over WebSocket:**
+- Simpler protocol, works over standard HTTP
+- Built-in reconnection in browsers
+- Better proxy/firewall compatibility
+- No need for bidirectional communication
+- Native EventSource API in browsers
 
 ### Webhook Subscriptions
 
@@ -465,18 +670,24 @@ The service provides an Elixir behaviour for type-safe integration:
 
 ```elixir
 # In your mix.exs
-{:wanderer_kills_client, github: "wanderer-industries/wanderer-kills", sparse: "client"}
+{:req, "~> 0.4"}
 
-# Usage
-alias WandererKills.Client
+# Usage - HTTP API client
+defmodule MyApp.WandererClient do
+  @base_url "http://localhost:4004"
 
-# Configure the client
-config :wanderer_kills_client,
-  base_url: "http://localhost:4004",
-  timeout: 30_000
+  def get_system_kills(system_id, opts \\ []) do
+    since_hours = Keyword.get(opts, :since_hours, 24)
+    limit = Keyword.get(opts, :limit, 50)
+    
+    Req.get("#{@base_url}/api/systems/#{system_id}/kills",
+      params: %{since_hours: since_hours, limit: limit}
+    )
+  end
+end
 
 # Fetch kills for a system
-{:ok, kills} = Client.get_system_kills(30000142, since_hours: 24, limit: 50)
+{:ok, %{body: kills}} = MyApp.WandererClient.get_system_kills(30000142, since_hours: 24, limit: 50)
 
 # Bulk fetch multiple systems
 {:ok, results} = Client.get_systems_kills([30000142, 30000144], since_hours: 24)

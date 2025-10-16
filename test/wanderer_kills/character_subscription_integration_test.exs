@@ -7,12 +7,33 @@ defmodule WandererKills.CharacterSubscriptionIntegrationTest do
   """
 
   use ExUnit.Case, async: false
-  use WandererKills.Test.SharedContexts
 
-  alias WandererKills.Core.Storage.KillmailStore
   alias WandererKills.Domain.Killmail
-  alias WandererKills.Subs.SubscriptionManager
-  alias WandererKills.Subs.Subscriptions.{CharacterIndex, SystemIndex}
+  alias WandererKills.Subs.SimpleSubscriptionManager, as: SubscriptionManager
+  alias WandererKills.Subs.{CharacterIndex, SystemIndex}
+
+  setup do
+    # Ensure TaskSupervisor is started
+    case Process.whereis(WandererKills.TaskSupervisor) do
+      nil -> start_supervised!({Task.Supervisor, name: WandererKills.TaskSupervisor})
+      _pid -> :ok
+    end
+
+    # Ensure SimpleSubscriptionManager is started
+    case Process.whereis(SubscriptionManager) do
+      nil -> start_supervised!(SubscriptionManager)
+      _pid -> :ok
+    end
+
+    # Clear any existing subscriptions
+    SubscriptionManager.clear_all_subscriptions()
+
+    # Clear indexes (they are initialized by SimpleSubscriptionManager)
+    CharacterIndex.clear()
+    SystemIndex.clear()
+
+    :ok
+  end
 
   # Helper to create test killmail structs
   defp create_test_killmail(attrs) do
@@ -39,21 +60,6 @@ defmodule WandererKills.CharacterSubscriptionIntegrationTest do
       |> Map.put_new("damage_done", 100)
       |> Map.put_new("final_blow", false)
     end)
-  end
-
-  setup do
-    # Clear all state without restarting the application
-    WandererKills.TestHelpers.clear_all_caches()
-    CharacterIndex.clear()
-    SystemIndex.clear()
-    # Skip cache clearing - let it be handled by TestHelpers.clear_all_caches()
-    # WandererKills.Ingest.Killmails.CharacterCache.clear_cache()
-    KillmailStore.clear()
-
-    # Clear all subscriptions to ensure clean state
-    SubscriptionManager.clear_all_subscriptions()
-
-    :ok
   end
 
   describe "character-based webhook subscriptions" do
@@ -124,10 +130,10 @@ defmodule WandererKills.CharacterSubscriptionIntegrationTest do
 
       [sub] = subscriptions
       # Character IDs are sorted in the subscription
-      assert Enum.sort(sub["character_ids"]) == Enum.sort([90_379_338, 95_465_499])
+      assert Enum.sort(sub.character_ids) == Enum.sort([90_379_338, 95_465_499])
 
       # Verify the Filter module correctly identifies matching killmails
-      alias WandererKills.Subs.Subscriptions.Filter
+      alias WandererKills.Subs.Filter
 
       assert Filter.matches_subscription?(killmail_with_victim_match, sub)
       assert Filter.matches_subscription?(killmail_with_attacker_match, sub)
@@ -210,7 +216,7 @@ defmodule WandererKills.CharacterSubscriptionIntegrationTest do
 
       # Verify filtering
       [sub] = SubscriptionManager.list_subscriptions()
-      alias WandererKills.Subs.Subscriptions.Filter
+      alias WandererKills.Subs.Filter
 
       assert Filter.matches_subscription?(killmail_system_match, sub)
       assert Filter.matches_subscription?(killmail_character_match, sub)
@@ -257,7 +263,7 @@ defmodule WandererKills.CharacterSubscriptionIntegrationTest do
         })
 
       [sub] = SubscriptionManager.list_subscriptions()
-      alias WandererKills.Subs.Subscriptions.Filter
+      alias WandererKills.Subs.Filter
 
       # Time the filtering operation
       {time, result} =

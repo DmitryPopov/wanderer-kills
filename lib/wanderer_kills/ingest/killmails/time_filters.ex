@@ -314,7 +314,14 @@ defmodule WandererKills.Ingest.Killmails.TimeFilters do
 
     {:ok, filtered}
   rescue
-    error -> {:error, error}
+    error ->
+      Logger.warning("Failed to filter killmails by time range",
+        error: Exception.format(:error, error, __STACKTRACE__),
+        start_time: start_time,
+        end_time: end_time
+      )
+
+      {:error, error}
   end
 
   @doc """
